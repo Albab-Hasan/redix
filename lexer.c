@@ -46,6 +46,12 @@ struct token *lexer_tokenize(const char *source, int *count)
 			continue;
 		}
 
+		/* grow the array if needed */
+		if (ntokens + 1 >= capacity) {
+			capacity *= 2;
+			tokens = realloc(tokens, sizeof(struct token) * capacity);
+		}	
+
 		/* single char tokens */
 		if (source[position] == '(') {
 			tokens[ntokens++] = make_token(TOKEN_LPAREN, "(");
@@ -79,11 +85,13 @@ struct token *lexer_tokenize(const char *source, int *count)
 			/* extract the substring */
 			length = position - start;	
 			number = malloc(length + 1);
-			strncpy(number, &source[start], length);
+			memcpy(number, &source[start], length);
 			number[length] = '\0';
 
-			tokens[ntokens++] = make_token(TOKEN_NUMBER, number);
-			free(number);
+			tokens[ntokens++] = (struct token) 
+			{
+				TOKEN_NUMBER, number
+			};	
 		}
 
 		/* keywords and identifiers */
@@ -101,32 +109,34 @@ struct token *lexer_tokenize(const char *source, int *count)
 			/* extract the word */
 			length = position - start;
 			word = malloc(length + 1);
-			strncpy(word, &source[start], length);
+			memcpy(word, &source[start], length);
 			word[length] = '\0';
 
 			/* find out if its a keyword or a identifier */
 			/* for now just int, return and identifiers */
-			if (strcmp(word, "int") == 0) {
-				tokens[ntokens++] = make_token(TOKEN_INT, word);
-			} else if (strcmp(word, "return") == 0) {
-				tokens[ntokens++] = make_token(TOKEN_RETURN, word);
+			if (length == 3 && memcmp(word, "int", 3) == 0) {
+				tokens[ntokens++] = (struct token)
+				{
+					TOKEN_INT, word
+				};
+			} else if (length == 6 && memcmp(word, "return", 6) == 0) {
+				tokens[ntokens++] = (struct token)
+				{
+					TOKEN_RETURN, word
+				};
 			} else {
-				tokens[ntokens++] = make_token(TOKEN_IDENTIFIER, word);
+				tokens[ntokens++] = (struct token)
+				{
+					TOKEN_IDENTIFIER, word
+				};
 			}
-			free(word);
 		}
 
 		/* unknown characters */
 		else {
 			fprintf(stderr, "redix: unexpected character '%c'\n", source[position]);
 			exit(1);
-		}
-
-		/* grow the array if needed */
-		if (ntokens >= capacity) {
-			capacity *= 2;
-			tokens = realloc(tokens, sizeof(struct token) * capacity);
-		}
+		}	
 	}
 
 	/* add EOF token at the end */
