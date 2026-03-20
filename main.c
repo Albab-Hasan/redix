@@ -1,14 +1,35 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include "lexer.h"
+#include "parser.h"
+
+/* print the ast */
+void print_ast(struct ast_node *node, int depth)
+{
+	int i;
+
+	for (i = 0; i < depth; i++)
+		printf(" ");
+
+	switch (node->type) {
+	case NODE_PROGRAM:	printf("Program\n"); break;
+	case NODE_FUNCTION:	printf("Function: %s\n", node->value); break;
+	case NODE_RETURN:	printf("Return\n"); break;
+	case NODE_NUMBER:	printf("Number: %s\n", node->value); break;	
+	}
+
+	for (i = 0; i < node->child_count; i++)
+		print_ast(node->children[i], depth + 1);
+}
 
 int main(int argc, char **argv) {
 	FILE *file;
 	long length;
 	char *source;
 	int count;
-	struct token *tokens;
 	int i;	
+	struct token *tokens;	
+	struct ast_node *ast;
 
 	if (argc < 2) {
 		fprintf(stderr, "Usage: redix <file.c>\n");
@@ -39,6 +60,12 @@ int main(int argc, char **argv) {
 	}
 
 	free(source);
+
+	ast = parse(tokens, count);
+	print_ast(ast, 0);
+
+	free_ast(ast);
+	free(tokens);
 
 	return 0;
 }
