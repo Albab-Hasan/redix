@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include "lexer.h"
 #include "parser.h"
+#include "codegen.h"
 
 /* print the ast */
 void print_ast(struct ast_node *node, int depth)
@@ -63,6 +64,18 @@ int main(int argc, char **argv) {
 
 	ast = parse(tokens, count);
 	print_ast(ast, 0);
+
+	{
+		FILE *outfile;
+		outfile = fopen("out.s", "w");
+		if (!outfile) {
+			fprintf(stderr, "redix: cannot open out.s for writing\n");
+			return 1;
+		}
+		codegen(ast, outfile);
+		fclose(outfile);
+		printf("wrote out.s\n");
+	}
 
 	free_ast(ast);
 	free(tokens);
