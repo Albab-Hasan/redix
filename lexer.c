@@ -26,6 +26,9 @@ const char *token_type_name(enum token_type type)
 	case TOKEN_LBRACE:	return "TOKEN_LBRACE";
 	case TOKEN_RBRACE:	return "TOKEN_RBRACE";
 	case TOKEN_SEMICOLON:	return "TOKEN_SEMICOLON";
+	case TOKEN_MINUS:	return "TOKEN_MINUS";
+	case TOKEN_TILDE:	return "TOKEN_TILDE";
+	case TOKEN_BANG:	return "TOKEN_BANG";
 	case TOKEN_EOF:		return "TOKEN_EOF";
 	default:		return "UNKNOWN";
 	}
@@ -67,6 +70,15 @@ struct token *lexer_tokenize(const char *source, int *count)
 			position++;
 		} else if (source[position] == ';') {
 			tokens[ntokens++] = make_token(TOKEN_SEMICOLON, ";");
+			position++;
+		} else if (source[position] == '-') {
+			tokens[ntokens++] = make_token(TOKEN_MINUS, "-");
+			position++;
+		} else if (source[position] == '~') {
+			tokens[ntokens++] = make_token(TOKEN_TILDE, "~");
+			position++;
+		} else if (source[position] == '!') {
+			tokens[ntokens++] = make_token(TOKEN_BANG, "!");
 			position++;
 		}
 

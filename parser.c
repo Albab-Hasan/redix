@@ -47,7 +47,20 @@ static void add_child(struct ast_node *parent, struct ast_node *child)
 /* for now expressions are just numbers */
 static struct ast_node *parse_expression(void)
 {
-	struct token *tok = expect(TOKEN_NUMBER);
+	struct token *tok;
+
+	if (current()->type == TOKEN_MINUS ||
+		current()->type == TOKEN_TILDE ||
+			current()->type == TOKEN_BANG) {
+				struct ast_node *node;
+
+				tok = &tokens[position++];
+				node = make_node(NODE_UNARY, tok->value);
+				add_child(node, parse_expression());
+				return node;
+			}
+
+	tok = expect(TOKEN_NUMBER);
 	return make_node(NODE_NUMBER, tok->value);
 }
 

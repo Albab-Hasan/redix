@@ -17,6 +17,7 @@ void print_ast(struct ast_node *node, int depth)
 	case NODE_FUNCTION:	printf("Function: %s\n", node->value); break;
 	case NODE_RETURN:	printf("Return\n"); break;
 	case NODE_NUMBER:	printf("Number: %s\n", node->value); break;	
+	case NODE_UNARY:	printf("Unary: %s\n", node->value); break;
 	}
 
 	for (i = 0; i < node->child_count; i++)
