@@ -44,24 +44,69 @@ static void add_child(struct ast_node *parent, struct ast_node *child)
 	parent->children[parent->child_count - 1] = child;
 }
 
-/* for now expressions are just numbers */
-static struct ast_node *parse_expression(void)
+/* just a number or expression later */
+static struct ast_node *parse_primary(void)
 {
 	struct token *tok;
 
-	if (current()->type == TOKEN_MINUS ||
-		current()->type == TOKEN_TILDE ||
-			current()->type == TOKEN_BANG) {
-				struct ast_node *node;
-
-				tok = &tokens[position++];
-				node = make_node(NODE_UNARY, tok->value);
-				add_child(node, parse_expression());
-				return node;
-			}
-
 	tok = expect(TOKEN_NUMBER);
 	return make_node(NODE_NUMBER, tok->value);
+}
+
+/* unary operators -, ~, !, ! */
+static struct ast_node *parse_unary(void)
+{
+	struct token *tok;
+	struct ast_node *node;
+
+	if (current()->type == TOKEN_MINUS ||
+			current()->type == TOKEN_TILDE ||
+			current()->type == TOKEN_BANG) {
+		tok = &tokens[position++];
+		node = make_node(NODE_UNARY, tok->value);
+		add_child(node, parse_unary());
+		return node;
+	}
+	return parse_primary();
+}
+
+/* multiplicative * and / */
+static struct ast_node *parse_multiplicative(void)
+{
+	struct ast_node *left;
+	struct ast_node *node;
+	
+	left = parse_unary();
+
+	while (current()->type == TOKEN_STAR ||
+			current()->type == TOKEN_SLASH) {
+		struct token *op = &tokens[position++];
+		node = make_node(NODE_BINARY, op->value);
+		add_child(node, left);
+		add_child(node, parse_unary());
+		left = node;
+	}
+
+	return left;
+}
+
+/* for now expressions are just numbers */
+static struct ast_node *parse_expression(void)
+{
+	struct ast_node *left;
+	struct ast_node *node;
+
+	left  = parse_multiplicative();
+
+	while (current()->type == TOKEN_PLUS ||
+			current()->type == TOKEN_MINUS) {
+		struct token *op = &tokens[position++];
+		node = make_node(NODE_BINARY, op->value);
+		add_child(node, left);
+		add_child(node, parse_multiplicative());
+		left = node;
+	}
+	return left;
 }
 
 /* parse a return statement */
@@ -87,6 +132,8 @@ static struct ast_node *parse_function(void)
 	expect(TOKEN_RBRACE);
 	return node;
 }
+
+
 
 /* entry point */
 struct ast_node *parse(struct token *toks, int count)

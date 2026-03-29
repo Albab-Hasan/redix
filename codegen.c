@@ -33,6 +33,27 @@ static void gen_expression(struct ast_node *node)
 			emit("\tmovl $0, %%eax");
 			emit("\tsete %%al");
 		}
+	} else if (node->type == NODE_BINARY) {
+		gen_expression(node->children[0]);
+		emit("\tpush %%rax");
+
+		gen_expression(node->children[1]);
+
+		emit("\tpop %%rcx");
+
+		if (node->value[0] == '+') {
+			emit("\taddl %%ecx, %%eax");
+		} else if (node->value[0] == '-') {
+			emit("\tsubl %%eax, %%ecx");
+			emit("\tmovl %%ecx, %%eax");
+		} else if (node->value[0] == '*') {
+			emit("\timull %%ecx, %%eax");
+		} else if (node->value[0] == '/') {
+			emit("\tmovl %%eax, %%ebx");
+			emit("\tmovl %%ecx, %%eax");
+			emit("\tcdq");
+			emit("\tidivl %%ebx");
+		}
 	} else {
 		fprintf(stderr, "codegen: unknown expression type\n");
 		exit(1);

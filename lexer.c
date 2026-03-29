@@ -30,6 +30,9 @@ const char *token_type_name(enum token_type type)
 	case TOKEN_TILDE:	return "TOKEN_TILDE";
 	case TOKEN_BANG:	return "TOKEN_BANG";
 	case TOKEN_EOF:		return "TOKEN_EOF";
+	case TOKEN_PLUS:	return "TOKEN_PLUS";
+	case TOKEN_STAR:	return "TOKEN_STAR";
+	case TOKEN_SLASH:	return "TOKEN_SLASH";
 	default:		return "UNKNOWN";
 	}
 }
@@ -79,6 +82,15 @@ struct token *lexer_tokenize(const char *source, int *count)
 			position++;
 		} else if (source[position] == '!') {
 			tokens[ntokens++] = make_token(TOKEN_BANG, "!");
+			position++;
+		} else if (source[position] == '+') {
+			tokens[ntokens++] = make_token(TOKEN_PLUS, "+");
+			position++;
+		} else if (source[position] == '*') {
+			tokens[ntokens++] = make_token(TOKEN_STAR, "*");
+			position++;
+		} else if (source[position] == '/') {
+			tokens[ntokens++] = make_token(TOKEN_SLASH, "/");
 			position++;
 		}
 

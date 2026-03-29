@@ -16,6 +16,9 @@ enum token_type {
 	TOKEN_TILDE,
 	TOKEN_BANG,
 	TOKEN_EOF,
+	TOKEN_PLUS,
+	TOKEN_STAR,
+	TOKEN_SLASH,
 };
 
 /* a tokens type and the actual text it came from */

@@ -9,7 +9,8 @@ enum node_type {
 	NODE_FUNCTION,
 	NODE_RETURN,
 	NODE_NUMBER,
-	NODE_UNARY
+	NODE_UNARY,
+	NODE_BINARY
 };
 
 /* a node in the abstrct syntax tree that can have child nodes */
