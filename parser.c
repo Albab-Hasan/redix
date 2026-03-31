@@ -90,13 +90,13 @@ static struct ast_node *parse_multiplicative(void)
 	return left;
 }
 
-/* for now expressions are just numbers */
-static struct ast_node *parse_expression(void)
+/* additive + and - */
+static struct ast_node *parse_additive(void)
 {
 	struct ast_node *left;
 	struct ast_node *node;
 
-	left  = parse_multiplicative();
+	left = parse_multiplicative();
 
 	while (current()->type == TOKEN_PLUS ||
 			current()->type == TOKEN_MINUS) {
@@ -104,6 +104,43 @@ static struct ast_node *parse_expression(void)
 		node = make_node(NODE_BINARY, op->value);
 		add_child(node, left);
 		add_child(node, parse_multiplicative());
+		left = node;
+	}
+	return left;
+}
+
+/* relational <, >, <=, >= */
+static struct ast_node *parse_relational(void)
+{
+	struct ast_node *left;
+	struct ast_node *node;
+
+	left = parse_additive();
+
+	while (current()->type == TOKEN_LT || current()->type == TOKEN_GT ||
+			current()->type == TOKEN_LTE || current()->type == TOKEN_GTE) {
+		struct token *op = &tokens[position++];
+		node = make_node(NODE_BINARY, op->value);
+		add_child(node, left);
+		add_child(node, parse_additive());
+		left = node;
+	}
+	return left;
+}
+
+/* equality ==, != */
+static struct ast_node *parse_expression(void)
+{
+	struct ast_node *left;
+	struct ast_node *node;
+
+	left = parse_relational();
+
+	while (current()->type == TOKEN_EQ || current()->type == TOKEN_NEQ) {
+		struct token *op = &tokens[position++];
+		node = make_node(NODE_BINARY, op->value);
+		add_child(node, left);
+		add_child(node, parse_relational());
 		left = node;
 	}
 	return left;

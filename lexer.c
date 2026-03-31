@@ -33,6 +33,12 @@ const char *token_type_name(enum token_type type)
 	case TOKEN_PLUS:	return "TOKEN_PLUS";
 	case TOKEN_STAR:	return "TOKEN_STAR";
 	case TOKEN_SLASH:	return "TOKEN_SLASH";
+	case TOKEN_LT:		return "TOKEN_LT";
+	case TOKEN_GT:		return "TOKEN_GT";
+	case TOKEN_LTE:		return "TOKEN_LTE";
+	case TOKEN_GTE:		return "TOKEN_GTE";
+	case TOKEN_EQ:		return "TOKEN_EQ";
+	case TOKEN_NEQ:		return "TOKEN_NEQ";
 	default:		return "UNKNOWN";
 	}
 }
@@ -81,8 +87,37 @@ struct token *lexer_tokenize(const char *source, int *count)
 			tokens[ntokens++] = make_token(TOKEN_TILDE, "~");
 			position++;
 		} else if (source[position] == '!') {
-			tokens[ntokens++] = make_token(TOKEN_BANG, "!");
-			position++;
+			if (source[position + 1] == '=') {
+				tokens[ntokens++] = make_token(TOKEN_NEQ, "!=");
+				position += 2;
+			} else {
+				tokens[ntokens++] = make_token(TOKEN_BANG, "!");
+				position++;
+			}
+		} else if (source[position] == '<') {
+			if (source[position + 1] == '=') {
+				tokens[ntokens++] = make_token(TOKEN_LTE, "<=");
+				position += 2;
+			} else {
+				tokens[ntokens++] = make_token(TOKEN_LT, "<");
+				position++;
+			}
+		} else if (source[position] == '>') {
+			if (source[position + 1] == '=') {
+				tokens[ntokens++] = make_token(TOKEN_GTE, ">=");
+				position += 2;
+			} else {
+				tokens[ntokens++] = make_token(TOKEN_GT, ">");
+				position++;
+			}
+		} else if (source[position] == '=') {
+			if (source[position + 1] == '=') {
+				tokens[ntokens++] = make_token(TOKEN_EQ, "==");
+				position += 2;
+			} else {
+				fprintf(stderr, "redix: unexpected character '='\n");
+				exit(1);
+			}
 		} else if (source[position] == '+') {
 			tokens[ntokens++] = make_token(TOKEN_PLUS, "+");
 			position++;

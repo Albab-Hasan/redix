@@ -53,6 +53,23 @@ static void gen_expression(struct ast_node *node)
 			emit("\tmovl %%ecx, %%eax");
 			emit("\tcdq");
 			emit("\tidivl %%ebx");
+		} else if (node->value[0] == '<' || node->value[0] == '>' ||
+				node->value[0] == '=' || node->value[0] == '!') {
+			/* ecx = left, eax = right -- compare left - right */
+			emit("\tcmpl %%eax, %%ecx");
+			emit("\tmovl $0, %%eax");
+			if (node->value[0] == '<' && node->value[1] == '=')
+				emit("\tsetle %%al");
+			else if (node->value[0] == '<')
+				emit("\tsetl %%al");
+			else if (node->value[0] == '>' && node->value[1] == '=')
+				emit("\tsetge %%al");
+			else if (node->value[0] == '>')
+				emit("\tsetg %%al");
+			else if (node->value[0] == '=')
+				emit("\tsete %%al");
+			else
+				emit("\tsetne %%al");
 		}
 	} else {
 		fprintf(stderr, "codegen: unknown expression type\n");

@@ -19,6 +19,12 @@ enum token_type {
 	TOKEN_PLUS,
 	TOKEN_STAR,
 	TOKEN_SLASH,
+	TOKEN_LT,
+	TOKEN_GT,
+	TOKEN_LTE,
+	TOKEN_GTE,
+	TOKEN_EQ,
+	TOKEN_NEQ,
 };
 
 /* a tokens type and the actual text it came from */
