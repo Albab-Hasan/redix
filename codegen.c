@@ -70,6 +70,17 @@ static void gen_expression(struct ast_node *node)
 				emit("\tsete %%al");
 			else
 				emit("\tsetne %%al");
+		} else if (node->value[0] == '&' || node->value[0] == '|') {
+			/* normalize left (ecx) and right (eax) to 0 or 1, then and/or */
+			emit("\tcmpl $0, %%ecx");
+			emit("\tsetne %%cl");
+			emit("\tcmpl $0, %%eax");
+			emit("\tsetne %%al");
+			if (node->value[0] == '&')
+				emit("\tandb %%cl, %%al");
+			else
+				emit("\torb %%cl, %%al");
+			emit("\tmovzbl %%al, %%eax");
 		}
 	} else {
 		fprintf(stderr, "codegen: unknown expression type\n");

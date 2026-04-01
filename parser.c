@@ -129,7 +129,7 @@ static struct ast_node *parse_relational(void)
 }
 
 /* equality ==, != */
-static struct ast_node *parse_expression(void)
+static struct ast_node *parse_equality(void)
 {
 	struct ast_node *left;
 	struct ast_node *node;
@@ -141,6 +141,42 @@ static struct ast_node *parse_expression(void)
 		node = make_node(NODE_BINARY, op->value);
 		add_child(node, left);
 		add_child(node, parse_relational());
+		left = node;
+	}
+	return left;
+}
+
+/* logical and && */
+static struct ast_node *parse_logical_and(void)
+{
+	struct ast_node *left;
+	struct ast_node *node;
+
+	left = parse_equality();
+
+	while (current()->type == TOKEN_AND) {
+		struct token *op = &tokens[position++];
+		node = make_node(NODE_BINARY, op->value);
+		add_child(node, left);
+		add_child(node, parse_equality());
+		left = node;
+	}
+	return left;
+}
+
+/* logical or || */
+static struct ast_node *parse_expression(void)
+{
+	struct ast_node *left;
+	struct ast_node *node;
+
+	left = parse_logical_and();
+
+	while (current()->type == TOKEN_OR) {
+		struct token *op = &tokens[position++];
+		node = make_node(NODE_BINARY, op->value);
+		add_child(node, left);
+		add_child(node, parse_logical_and());
 		left = node;
 	}
 	return left;

@@ -25,6 +25,8 @@ enum token_type {
 	TOKEN_GTE,
 	TOKEN_EQ,
 	TOKEN_NEQ,
+	TOKEN_AND,
+	TOKEN_OR,
 };
 
 /* a tokens type and the actual text it came from */

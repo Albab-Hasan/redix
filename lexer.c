@@ -39,6 +39,8 @@ const char *token_type_name(enum token_type type)
 	case TOKEN_GTE:		return "TOKEN_GTE";
 	case TOKEN_EQ:		return "TOKEN_EQ";
 	case TOKEN_NEQ:		return "TOKEN_NEQ";
+	case TOKEN_AND:		return "TOKEN_AND";
+	case TOKEN_OR:		return "TOKEN_OR";
 	default:		return "UNKNOWN";
 	}
 }
@@ -127,9 +129,25 @@ struct token *lexer_tokenize(const char *source, int *count)
 		} else if (source[position] == '/') {
 			tokens[ntokens++] = make_token(TOKEN_SLASH, "/");
 			position++;
+		} else if (source[position] == '&') {
+			if (source[position + 1] == '&') {
+				tokens[ntokens++] = make_token(TOKEN_AND, "&&");
+				position += 2;
+			} else {
+				fprintf(stderr, "redix: unexpected character '&'\n");
+				exit(1);
+			}
+		} else if (source[position] == '|') {
+			if (source[position + 1] == '|') {
+				tokens[ntokens++] = make_token(TOKEN_OR, "||");
+				position += 2;
+			} else {
+				fprintf(stderr, "redix: unexpected character '|'\n");
+				exit(1);
+			}
 		}
 
-		/* 
+		/*
 		 * numbers
 		 * when a number comes up, keep going until the number ends 
 		 */
