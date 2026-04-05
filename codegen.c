@@ -1,10 +1,43 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "codegen.h"
 #include "parser.h"
 
 static FILE *out;
+
+/* variable stack map tracks where each local lives on the stack */
+#define MAX_VARS 128
+static struct {
+	char *name;
+	int offset; /* negative offset from rbp */
+} var_map[MAX_VARS];
+static int var_count;
+static int stack_offset;
+
+/* look up a variable stack offset by name */
+static int find_var(const char *name)
+{
+	int i;
+	for (i = 0; i < var_count; i++) {
+		if (strcmp(var_map[i].name, name) == 0)
+			return var_map[i].offset;
+	}
+	fprintf(stderr, "codegen: undefined variable '%s'\n", name);
+	exit(1);
+	return 0;
+}
+
+/* add a new variable to the stack map */
+static int declare_var(const char *name)
+{
+	stack_offset -= 4;
+	var_map[var_count].name = strdup(name);
+	var_map[var_count].offset = stack_offset;
+	var_count++;
+	return stack_offset;
+}
 
 /* emit a line of assembly */
 static void emit(const char *fmt, ...)
@@ -82,6 +115,13 @@ static void gen_expression(struct ast_node *node)
 				emit("\torb %%cl, %%al");
 			emit("\tmovzbl %%al, %%eax");
 		}
+	} else if (node->type == NODE_VAR) {
+		int offset = find_var(node->value);
+		emit("\tmovl %d(%%rbp), %%eax", offset);
+	} else if (node->type == NODE_ASSIGN) {
+		int offset = find_var(node->value);
+		gen_expression(node->children[0]);
+		emit("\tmovl %%eax, %d(%%rbp)", offset);
 	} else {
 		fprintf(stderr, "codegen: unknown expression type\n");
 		exit(1);
@@ -92,18 +132,67 @@ static void gen_statement(struct ast_node *node)
 {
 	if (node->type == NODE_RETURN) {
 		gen_expression(node->children[0]);
+		emit("\tmovq %%rbp, %%rsp");
+		emit("\tpopq %%rbp");
 		emit("\tret");
+	} else if (node->type == NODE_DECLARATION) {
+		int offset = declare_var(node->value);
+		if (node->child_count > 0) {
+			/* has initializer */
+			gen_expression(node->children[0]);
+			emit("\tmovl %%eax, %d(%%rbp)", offset);
+		}
+	} else if (node->type == NODE_ASSIGN || node->type == NODE_VAR ||
+			node->type == NODE_BINARY || node->type == NODE_UNARY ||
+			node->type == NODE_NUMBER) {
+		/* expression statement */
+		gen_expression(node);
 	} else {
 		fprintf(stderr, "codegen: unknown statement type\n");
 		exit(1);
 	}
 }
 
+/* count declarations so the right amount of stack gets reserved */
+static int count_declarations(struct ast_node *body)
+{
+	int i;
+	int count = 0;
+	for (i = 0; i < body->child_count; i++) {
+		if (body->children[i]->type == NODE_DECLARATION)
+			count++;
+	}
+	return count;
+}
+
 static void gen_function(struct ast_node *node)
 {
+	int i;
+	int num_vars;
+	int alloc_size;
+	struct ast_node *body;
+
+	/* reset variable state */
+	var_count = 0;
+	stack_offset = 0;
+
 	emit(".global %s", node->value);
 	emit("%s:", node->value);
-	gen_statement(node->children[0]);
+	emit("\tpushq %%rbp");
+	emit("\tmovq %%rsp, %%rbp");
+
+	/* reserve stack space for locals aligned to 16 */
+	body = node->children[0];
+	num_vars = count_declarations(body);
+	if (num_vars > 0) {
+		alloc_size = num_vars * 4;
+		if (alloc_size % 16 != 0)
+			alloc_size = alloc_size + (16 - alloc_size % 16);
+		emit("\tsubq $%d, %%rsp", alloc_size);
+	}
+
+	for (i = 0; i < body->child_count; i++)
+		gen_statement(body->children[i]);
 }
 
 static void gen_program(struct ast_node *node)

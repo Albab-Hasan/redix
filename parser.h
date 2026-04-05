@@ -10,7 +10,11 @@ enum node_type {
 	NODE_RETURN,
 	NODE_NUMBER,
 	NODE_UNARY,
-	NODE_BINARY
+	NODE_BINARY,
+	NODE_DECLARATION,
+	NODE_ASSIGN,
+	NODE_VAR,
+	NODE_COMPOUND
 };
 
 /* a node in the abstrct syntax tree that can have child nodes */

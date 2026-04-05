@@ -41,6 +41,7 @@ const char *token_type_name(enum token_type type)
 	case TOKEN_NEQ:		return "TOKEN_NEQ";
 	case TOKEN_AND:		return "TOKEN_AND";
 	case TOKEN_OR:		return "TOKEN_OR";
+	case TOKEN_ASSIGN:	return "TOKEN_ASSIGN";
 	default:		return "UNKNOWN";
 	}
 }
@@ -117,8 +118,8 @@ struct token *lexer_tokenize(const char *source, int *count)
 				tokens[ntokens++] = make_token(TOKEN_EQ, "==");
 				position += 2;
 			} else {
-				fprintf(stderr, "redix: unexpected character '='\n");
-				exit(1);
+				tokens[ntokens++] = make_token(TOKEN_ASSIGN, "=");
+				position++;
 			}
 		} else if (source[position] == '+') {
 			tokens[ntokens++] = make_token(TOKEN_PLUS, "+");
