@@ -42,6 +42,8 @@ const char *token_type_name(enum token_type type)
 	case TOKEN_AND:		return "TOKEN_AND";
 	case TOKEN_OR:		return "TOKEN_OR";
 	case TOKEN_ASSIGN:	return "TOKEN_ASSIGN";
+	case TOKEN_IF:		return "TOKEN_IF";
+	case TOKEN_ELSE:	return "TOKEN_ELSE";
 	default:		return "UNKNOWN";
 	}
 }
@@ -201,6 +203,16 @@ struct token *lexer_tokenize(const char *source, int *count)
 				tokens[ntokens++] = (struct token)
 				{
 					TOKEN_RETURN, word
+				};
+			} else if (length == 2 && memcmp(word, "if", 2) == 0) {
+				tokens[ntokens++] = (struct token)
+				{
+					TOKEN_IF, word
+				};
+			} else if (length == 4 && memcmp(word, "else", 4) == 0) {
+				tokens[ntokens++] = (struct token)
+				{
+					TOKEN_ELSE, word
 				};
 			} else {
 				tokens[ntokens++] = (struct token)

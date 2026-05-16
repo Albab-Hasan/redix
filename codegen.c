@@ -6,6 +6,7 @@
 #include "parser.h"
 
 static FILE *out;
+static int label_count;
 
 /* variable stack map tracks where each local lives on the stack */
 #define MAX_VARS 128
@@ -142,6 +143,25 @@ static void gen_statement(struct ast_node *node)
 			gen_expression(node->children[0]);
 			emit("\tmovl %%eax, %d(%%rbp)", offset);
 		}
+	} else if (node->type == NODE_COMPOUND) {
+		int i;
+		for (i = 0; i < node->child_count; i++)
+			gen_statement(node->children[i]);
+	} else if (node->type == NODE_IF) {
+		int lbl = label_count++;
+		gen_expression(node->children[0]);
+		emit("\tcmpl $0, %%eax");
+		if (node->child_count == 3) {
+			emit("\tje .Lelse%d", lbl);
+			gen_statement(node->children[1]);
+			emit("\tjmp .Lend%d", lbl);
+			emit(".Lelse%d:", lbl);
+			gen_statement(node->children[2]);
+		} else {
+			emit("\tje .Lend%d", lbl);
+			gen_statement(node->children[1]);
+		}
+		emit(".Lend%d:", lbl);
 	} else if (node->type == NODE_ASSIGN || node->type == NODE_VAR ||
 			node->type == NODE_BINARY || node->type == NODE_UNARY ||
 			node->type == NODE_NUMBER) {
@@ -154,20 +174,20 @@ static void gen_statement(struct ast_node *node)
 }
 
 /* count declarations so the right amount of stack gets reserved */
-static int count_declarations(struct ast_node *body)
+static int count_declarations(struct ast_node *node)
 {
 	int i;
 	int count = 0;
-	for (i = 0; i < body->child_count; i++) {
-		if (body->children[i]->type == NODE_DECLARATION)
-			count++;
-	}
+
+	if (node->type == NODE_DECLARATION)
+		return 1;
+	for (i = 0; i < node->child_count; i++)
+		count += count_declarations(node->children[i]);
 	return count;
 }
 
 static void gen_function(struct ast_node *node)
 {
-	int i;
 	int num_vars;
 	int alloc_size;
 	struct ast_node *body;
@@ -175,6 +195,7 @@ static void gen_function(struct ast_node *node)
 	/* reset variable state */
 	var_count = 0;
 	stack_offset = 0;
+	label_count = 0;
 
 	emit(".global %s", node->value);
 	emit("%s:", node->value);
@@ -191,8 +212,7 @@ static void gen_function(struct ast_node *node)
 		emit("\tsubq $%d, %%rsp", alloc_size);
 	}
 
-	for (i = 0; i < body->child_count; i++)
-		gen_statement(body->children[i]);
+	gen_statement(body);
 }
 
 static void gen_program(struct ast_node *node)
@@ -209,5 +229,4 @@ void codegen(struct ast_node *ast, FILE *output)
 {
 	out = output;
 	gen_program(ast);
-
 }

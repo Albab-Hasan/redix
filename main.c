@@ -23,6 +23,7 @@ void print_ast(struct ast_node *node, int depth)
 	case NODE_ASSIGN:	printf("Assign: %s\n", node->value); break;
 	case NODE_VAR:		printf("Var: %s\n", node->value); break;
 	case NODE_COMPOUND:	printf("Compound\n"); break;
+	case NODE_IF:		printf("If\n"); break;
 	}
 
 	for (i = 0; i < node->child_count; i++)

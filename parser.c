@@ -44,6 +44,8 @@ static void add_child(struct ast_node *parent, struct ast_node *child)
 	parent->children[parent->child_count - 1] = child;
 }
 
+static struct ast_node *parse_statement(void);
+
 /* number or variable reference */
 static struct ast_node *parse_primary(void)
 {
@@ -63,7 +65,7 @@ static struct ast_node *parse_primary(void)
 	return NULL;
 }
 
-/* unary operators -, ~, !, ! */
+/* unary operators -, ~, ! */
 static struct ast_node *parse_unary(void)
 {
 	struct token *tok;
@@ -85,7 +87,7 @@ static struct ast_node *parse_multiplicative(void)
 {
 	struct ast_node *left;
 	struct ast_node *node;
-	
+
 	left = parse_unary();
 
 	while (current()->type == TOKEN_STAR ||
@@ -210,10 +212,26 @@ static struct ast_node *parse_expression(void)
 	return left;
 }
 
+/* parse a block { stmt* } into a compound node */
+static struct ast_node *parse_block(void)
+{
+	struct ast_node *node;
+
+	expect(TOKEN_LBRACE);
+	node = make_node(NODE_COMPOUND, NULL);
+	while (current()->type != TOKEN_RBRACE)
+		add_child(node, parse_statement());
+	expect(TOKEN_RBRACE);
+	return node;
+}
+
 /* parse a single statement */
 static struct ast_node *parse_statement(void)
 {
 	struct ast_node *node;
+
+	if (current()->type == TOKEN_LBRACE)
+		return parse_block();
 
 	if (current()->type == TOKEN_RETURN) {
 		position++;
@@ -237,6 +255,20 @@ static struct ast_node *parse_statement(void)
 		return node;
 	}
 
+	if (current()->type == TOKEN_IF) {
+		position++;
+		node = make_node(NODE_IF, NULL);
+		expect(TOKEN_LPAREN);
+		add_child(node, parse_expression()); /* condition */
+		expect(TOKEN_RPAREN);
+		add_child(node, parse_statement());  /* then */
+		if (current()->type == TOKEN_ELSE) {
+			position++;
+			add_child(node, parse_statement()); /* else */
+		}
+		return node;
+	}
+
 	/* expression statement like assignments */
 	node = parse_expression();
 	expect(TOKEN_SEMICOLON);
@@ -246,26 +278,17 @@ static struct ast_node *parse_statement(void)
 /* parse a function */
 static struct ast_node *parse_function(void)
 {
-	struct ast_node *body;
+	struct token *name;
+	struct ast_node *node;
 
 	expect(TOKEN_INT);
-	struct token *name = expect(TOKEN_IDENTIFIER);
-	struct ast_node *node = make_node(NODE_FUNCTION, name->value);
+	name = expect(TOKEN_IDENTIFIER);
+	node = make_node(NODE_FUNCTION, name->value);
 	expect(TOKEN_LPAREN);
 	expect(TOKEN_RPAREN);
-	expect(TOKEN_LBRACE);
-
-	/* parse all statements into a compound node */
-	body = make_node(NODE_COMPOUND, NULL);
-	while (current()->type != TOKEN_RBRACE)
-		add_child(body, parse_statement());
-
-	expect(TOKEN_RBRACE);
-	add_child(node, body);
+	add_child(node, parse_block());
 	return node;
 }
-
-
 
 /* entry point */
 struct ast_node *parse(struct token *toks, int count)
