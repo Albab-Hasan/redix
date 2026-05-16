@@ -62,7 +62,7 @@ static void gen_expression(struct ast_node *node)
 		} else if (node->value[0] == '~') {
 			emit("\tnot %%eax");
 		} else if (node->value[0] == '!') {
-			emit("%tcmpl $0, %%eax");
+			emit("\tcmpl $0, %%eax");
 			emit("\tmovl $0, %%eax");
 			emit("\tsete %%al");
 		}
