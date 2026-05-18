@@ -44,6 +44,7 @@ const char *token_type_name(enum token_type type)
 	case TOKEN_ASSIGN:	return "TOKEN_ASSIGN";
 	case TOKEN_IF:		return "TOKEN_IF";
 	case TOKEN_ELSE:	return "TOKEN_ELSE";
+	case TOKEN_WHILE:	return "TOKEN_WHILE";
 	default:		return "UNKNOWN";
 	}
 }
@@ -213,6 +214,11 @@ struct token *lexer_tokenize(const char *source, int *count)
 				tokens[ntokens++] = (struct token)
 				{
 					TOKEN_ELSE, word
+				};
+			} else if (length == 5 && memcmp(word, "while", 5) == 0) {
+				tokens[ntokens++] = (struct token)
+				{
+					TOKEN_WHILE, word
 				};
 			} else {
 				tokens[ntokens++] = (struct token)

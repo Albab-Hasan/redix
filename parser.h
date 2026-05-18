@@ -15,7 +15,8 @@ enum node_type {
 	NODE_ASSIGN,
 	NODE_VAR,
 	NODE_COMPOUND,
-	NODE_IF
+	NODE_IF,
+	NODE_WHILE
 };
 
 /* a node in the abstrct syntax tree that can have child nodes */

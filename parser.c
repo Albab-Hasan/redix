@@ -18,7 +18,8 @@ static struct token *current(void)
 static struct token *expect(enum token_type type)
 {
 	if (position >= token_count || current()->type != type) {
-		fprintf(stderr, "parser: unexpected token '%s'\n", current()->value);
+		fprintf(stderr, "parser: unexpected token '%s'\n", 
+				current()->value);
 		exit(1);
 	}
 	return &tokens[position++];
@@ -266,6 +267,16 @@ static struct ast_node *parse_statement(void)
 			position++;
 			add_child(node, parse_statement()); /* else */
 		}
+		return node;
+	}
+
+	if (current()->type == TOKEN_WHILE) {
+		position++;
+		node = make_node(NODE_WHILE, NULL);
+		expect(TOKEN_LPAREN);
+		add_child(node, parse_expression()); /* condition */
+		expect(TOKEN_RPAREN);
+		add_child(node, parse_statement());  /* body */
 		return node;
 	}
 

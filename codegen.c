@@ -162,6 +162,15 @@ static void gen_statement(struct ast_node *node)
 			gen_statement(node->children[1]);
 		}
 		emit(".Lend%d:", lbl);
+	} else if (node->type == NODE_WHILE) {
+		int lbl = label_count++;
+		emit(".Lwhile_start%d:", lbl);
+		gen_expression(node->children[0]);
+		emit("\tcmpl $0, %%eax");
+		emit("\tje .Lwhile_end%d", lbl);
+		gen_statement(node->children[1]);
+		emit("\tjmp .Lwhile_start%d", lbl);
+		emit(".Lwhile_end%d:", lbl);
 	} else if (node->type == NODE_ASSIGN || node->type == NODE_VAR ||
 			node->type == NODE_BINARY || node->type == NODE_UNARY ||
 			node->type == NODE_NUMBER) {
