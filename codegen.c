@@ -171,6 +171,17 @@ static void gen_statement(struct ast_node *node)
 		gen_statement(node->children[1]);
 		emit("\tjmp .Lwhile_start%d", lbl);
 		emit(".Lwhile_end%d:", lbl);
+	} else if (node->type == NODE_FOR) {
+		int lbl = label_count++;
+		gen_expression(node->children[0]);		/* init */
+		emit(".Lfor_cond%d:", lbl);
+		gen_expression(node->children[1]);		/* condition */
+		emit("\tcmpl $0, %%eax");
+		emit("\tje .Lfor_end%d", lbl);
+		gen_statement(node->children[3]);		/* body */
+		gen_expression(node->children[2]);		/* increment */
+		emit("\tjmp .Lfor_cond%d", lbl);
+		emit(".Lfor_end%d:", lbl);
 	} else if (node->type == NODE_ASSIGN || node->type == NODE_VAR ||
 			node->type == NODE_BINARY || node->type == NODE_UNARY ||
 			node->type == NODE_NUMBER) {

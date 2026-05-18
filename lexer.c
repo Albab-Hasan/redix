@@ -45,6 +45,7 @@ const char *token_type_name(enum token_type type)
 	case TOKEN_IF:		return "TOKEN_IF";
 	case TOKEN_ELSE:	return "TOKEN_ELSE";
 	case TOKEN_WHILE:	return "TOKEN_WHILE";
+	case TOKEN_FOR:		return "TOKEN_FOR";
 	default:		return "UNKNOWN";
 	}
 }
@@ -219,6 +220,11 @@ struct token *lexer_tokenize(const char *source, int *count)
 				tokens[ntokens++] = (struct token)
 				{
 					TOKEN_WHILE, word
+				};
+			} else if (length == 3 && memcmp(word, "for", 3) == 0) {
+				tokens[ntokens++] = (struct token)
+				{
+					TOKEN_FOR, word
 				};
 			} else {
 				tokens[ntokens++] = (struct token)

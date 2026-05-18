@@ -13,6 +13,7 @@ code generation. Currently it supports:
 - local variable declarations, assignments, and references
 - `if`/`else` statements
 - `while` loops
+- `for` loops
 
 ## License
 

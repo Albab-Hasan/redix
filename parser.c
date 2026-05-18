@@ -281,6 +281,20 @@ static struct ast_node *parse_statement(void)
 		return node;
 	}
 
+	if (current()->type == TOKEN_FOR) {
+		position++;
+		node = make_node(NODE_FOR, NULL);
+		expect(TOKEN_LPAREN);
+		add_child(node, parse_expression()); /* init */
+		expect(TOKEN_SEMICOLON);
+		add_child(node, parse_expression()); /* condition */
+		expect(TOKEN_SEMICOLON);
+		add_child(node, parse_expression()); /* increment */
+		expect(TOKEN_RPAREN);
+		add_child(node, parse_statement());  /* body */
+		return node;
+	}
+
 	/* expression statement like assignments */
 	node = parse_expression();
 	expect(TOKEN_SEMICOLON);
