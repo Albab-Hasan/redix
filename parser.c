@@ -207,6 +207,7 @@ static struct ast_node *parse_expression(void)
 	if (current()->type == TOKEN_ASSIGN) {
 		position++;
 		node = make_node(NODE_ASSIGN, left->value);
+		free_ast(left);
 		add_child(node, parse_expression()); /* right associative */
 		return node;
 	}

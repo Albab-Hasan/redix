@@ -21,7 +21,7 @@ static int stack_offset;
 static int find_var(const char *name)
 {
 	int i;
-	for (i = 0; i < var_count; i++) {
+	for (i = var_count - 1; i >= 0; i--) {
 		if (strcmp(var_map[i].name, name) == 0)
 			return var_map[i].offset;
 	}
@@ -204,7 +204,6 @@ static void gen_function(struct ast_node *node)
 	/* reset variable state */
 	var_count = 0;
 	stack_offset = 0;
-	label_count = 0;
 
 	emit(".global %s", node->value);
 	emit("%s:", node->value);
