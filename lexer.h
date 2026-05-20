@@ -32,6 +32,8 @@ enum token_type {
 	TOKEN_ELSE,
 	TOKEN_WHILE,
 	TOKEN_FOR,
+	TOKEN_BREAK,
+	TOKEN_CONTINUE,
 };
 
 /* a tokens type and the actual text it came from */

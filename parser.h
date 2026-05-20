@@ -17,7 +17,9 @@ enum node_type {
 	NODE_COMPOUND,
 	NODE_IF,
 	NODE_WHILE,
-	NODE_FOR
+	NODE_FOR,
+	NODE_BREAK,
+	NODE_CONTINUE
 };
 
 /* a node in the abstrct syntax tree that can have child nodes */

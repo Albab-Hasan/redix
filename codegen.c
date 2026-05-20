@@ -7,6 +7,8 @@
 
 static FILE *out;
 static int label_count;
+static char loop_break_label[64];
+static char loop_cont_label[64];
 
 /* variable stack map tracks where each local lives on the stack */
 #define MAX_VARS 128
@@ -162,8 +164,17 @@ static void gen_statement(struct ast_node *node)
 			gen_statement(node->children[1]);
 		}
 		emit(".Lend%d:", lbl);
+	} else if (node->type == NODE_BREAK) {
+		emit("\tjmp %s", loop_break_label);
+	} else if (node->type == NODE_CONTINUE) {
+		emit("\tjmp %s", loop_cont_label);
 	} else if (node->type == NODE_WHILE) {
 		int lbl = label_count++;
+		char old_break[64], old_cont[64];
+		strcpy(old_break, loop_break_label);
+		strcpy(old_cont, loop_cont_label);
+		sprintf(loop_break_label, ".Lwhile_end%d", lbl);
+		sprintf(loop_cont_label, ".Lwhile_start%d", lbl);
 		emit(".Lwhile_start%d:", lbl);
 		gen_expression(node->children[0]);
 		emit("\tcmpl $0, %%eax");
@@ -171,17 +182,27 @@ static void gen_statement(struct ast_node *node)
 		gen_statement(node->children[1]);
 		emit("\tjmp .Lwhile_start%d", lbl);
 		emit(".Lwhile_end%d:", lbl);
+		strcpy(loop_break_label, old_break);
+		strcpy(loop_cont_label, old_cont);
 	} else if (node->type == NODE_FOR) {
 		int lbl = label_count++;
+		char old_break[64], old_cont[64];
+		strcpy(old_break, loop_break_label);
+		strcpy(old_cont, loop_cont_label);
+		sprintf(loop_break_label, ".Lfor_end%d", lbl);
+		sprintf(loop_cont_label, ".Lfor_inc%d", lbl);
 		gen_expression(node->children[0]);		/* init */
 		emit(".Lfor_cond%d:", lbl);
 		gen_expression(node->children[1]);		/* condition */
 		emit("\tcmpl $0, %%eax");
 		emit("\tje .Lfor_end%d", lbl);
 		gen_statement(node->children[3]);		/* body */
+		emit(".Lfor_inc%d:", lbl);
 		gen_expression(node->children[2]);		/* increment */
 		emit("\tjmp .Lfor_cond%d", lbl);
 		emit(".Lfor_end%d:", lbl);
+		strcpy(loop_break_label, old_break);
+		strcpy(loop_cont_label, old_cont);
 	} else if (node->type == NODE_ASSIGN || node->type == NODE_VAR ||
 			node->type == NODE_BINARY || node->type == NODE_UNARY ||
 			node->type == NODE_NUMBER) {
@@ -215,6 +236,8 @@ static void gen_function(struct ast_node *node)
 	/* reset variable state */
 	var_count = 0;
 	stack_offset = 0;
+	loop_break_label[0] = '\0';
+	loop_cont_label[0] = '\0';
 
 	emit(".global %s", node->value);
 	emit("%s:", node->value);
