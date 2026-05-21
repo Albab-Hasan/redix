@@ -14,6 +14,8 @@ code generation. Currently it supports:
 - `if`/`else` statements
 - `while` loops
 - `for` loops
+- `break` and `continue`
+- multiple functions with parameters and calls
 
 ## License
 
