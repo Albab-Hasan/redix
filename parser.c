@@ -46,18 +46,36 @@ static void add_child(struct ast_node *parent, struct ast_node *child)
 }
 
 static struct ast_node *parse_statement(void);
+static struct ast_node *parse_expression(void);
 
-/* number or variable reference */
+/* number, variable, function call, or parenthesized expression */
 static struct ast_node *parse_primary(void)
 {
 	struct token *tok;
+	struct ast_node *node;
 
 	if (current()->type == TOKEN_NUMBER) {
 		tok = &tokens[position++];
 		return make_node(NODE_NUMBER, tok->value);
 	} else if (current()->type == TOKEN_IDENTIFIER) {
 		tok = &tokens[position++];
+		if (current()->type == TOKEN_LPAREN) {
+			position++; /* consume ( */
+			node = make_node(NODE_CALL, tok->value);
+			while (current()->type != TOKEN_RPAREN) {
+				add_child(node, parse_expression());
+				if (current()->type == TOKEN_COMMA)
+					position++;
+			}
+			expect(TOKEN_RPAREN);
+			return node;
+		}
 		return make_node(NODE_VAR, tok->value);
+	} else if (current()->type == TOKEN_LPAREN) {
+		position++; /* consume ( */
+		node = parse_expression();
+		expect(TOKEN_RPAREN);
+		return node;
 	}
 
 	fprintf(stderr, "parser: expected number or variable, got '%s'\n",
@@ -315,30 +333,41 @@ static struct ast_node *parse_statement(void)
 	return node;
 }
 
-/* parse a function */
+/* parse a function — params stored as NODE_DECLARATION children before body */
 static struct ast_node *parse_function(void)
 {
 	struct token *name;
+	struct token *pname;
 	struct ast_node *node;
 
 	expect(TOKEN_INT);
 	name = expect(TOKEN_IDENTIFIER);
 	node = make_node(NODE_FUNCTION, name->value);
 	expect(TOKEN_LPAREN);
+	while (current()->type != TOKEN_RPAREN) {
+		expect(TOKEN_INT);
+		pname = expect(TOKEN_IDENTIFIER);
+		add_child(node, make_node(NODE_DECLARATION, pname->value));
+		if (current()->type == TOKEN_COMMA)
+			position++;
+	}
 	expect(TOKEN_RPAREN);
-	add_child(node, parse_block());
+	add_child(node, parse_block()); /* body is always last child */
 	return node;
 }
 
 /* entry point */
 struct ast_node *parse(struct token *toks, int count)
 {
+	struct ast_node *program;
+
 	tokens = toks;
 	token_count = count;
 	position = 0;
 
-	struct ast_node *program = make_node(NODE_PROGRAM, NULL);
-	add_child(program, parse_function());
+	program = make_node(NODE_PROGRAM, NULL);
+	while (current()->type != TOKEN_EOF)
+		add_child(program, parse_function());
 	return program;
 }
 

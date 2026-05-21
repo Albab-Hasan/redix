@@ -9,8 +9,7 @@ static struct token make_token(enum token_type type, const char *value)
 {
 	struct token t;
 	t.type = type;
-	t.value = strdup(value);	/* duplicate the string */
-
+	t.value = strdup(value);
 	return t;
 }
 
@@ -48,6 +47,7 @@ const char *token_type_name(enum token_type type)
 	case TOKEN_FOR:		return "TOKEN_FOR";
 	case TOKEN_BREAK:	return "TOKEN_BREAK";
 	case TOKEN_CONTINUE:	return "TOKEN_CONTINUE";
+	case TOKEN_COMMA:	return "TOKEN_COMMA";
 	default:		return "UNKNOWN";
 	}
 }
@@ -55,13 +55,13 @@ const char *token_type_name(enum token_type type)
 struct token *lexer_tokenize(const char *source, int *count)
 {
 	int capacity = 64;
-	struct token *tokens = malloc(sizeof(struct token) * capacity);
 	int ntokens = 0;
 	int position = 0;
+	struct token *tokens = malloc(sizeof(struct token) * capacity);
 
 	while (source[position] != '\0') {
 
-		/* skip whitespaces */
+		/* skip whitespace */
 		if (isspace(source[position])) {
 			position++;
 			continue;
@@ -71,9 +71,8 @@ struct token *lexer_tokenize(const char *source, int *count)
 		if (ntokens + 1 >= capacity) {
 			capacity *= 2;
 			tokens = realloc(tokens, sizeof(struct token) * capacity);
-		}	
+		}
 
-		/* single char tokens */
 		if (source[position] == '(') {
 			tokens[ntokens++] = make_token(TOKEN_LPAREN, "(");
 			position++;
@@ -88,6 +87,9 @@ struct token *lexer_tokenize(const char *source, int *count)
 			position++;
 		} else if (source[position] == ';') {
 			tokens[ntokens++] = make_token(TOKEN_SEMICOLON, ";");
+			position++;
+		} else if (source[position] == ',') {
+			tokens[ntokens++] = make_token(TOKEN_COMMA, ",");
 			position++;
 		} else if (source[position] == '-') {
 			tokens[ntokens++] = make_token(TOKEN_MINUS, "-");
@@ -152,110 +154,56 @@ struct token *lexer_tokenize(const char *source, int *count)
 				fprintf(stderr, "redix: unexpected character '|'\n");
 				exit(1);
 			}
-		}
+		} else if (isdigit(source[position])) {
+			int start = position;
+			int length;
+			char *number;
 
-		/*
-		 * numbers
-		 * when a number comes up, keep going until the number ends 
-		 */
-		else if (isdigit(source[position])) {
-			int start, length;
-			char *number;	
-
-			start = position;
-			while (isdigit(source[position])) {
+			while (isdigit(source[position]))
 				position++;
-			}
-			/* extract the substring */
-			length = position - start;	
+			length = position - start;
 			number = malloc(length + 1);
 			memcpy(number, &source[start], length);
 			number[length] = '\0';
-
-			tokens[ntokens++] = (struct token) 
-			{
-				TOKEN_NUMBER, number
-			};	
-		}
-
-		/* keywords and identifiers */
-		/* for now im thinking letters and underscores start a word */
-		else if (isalpha(source[position]) || source[position] == '_') {
-			int start;
+			tokens[ntokens++] = (struct token){ TOKEN_NUMBER, number };
+		} else if (isalpha(source[position]) || source[position] == '_') {
+			int start = position;
 			int length;
 			char *word;
 
-			start = position;
 			while (isalpha(source[position]) || isdigit(source[position])
-				|| source[position] == '_') {
+					|| source[position] == '_')
 				position++;
-			}
-			/* extract the word */
 			length = position - start;
 			word = malloc(length + 1);
 			memcpy(word, &source[start], length);
 			word[length] = '\0';
 
-			/* find out if its a keyword or a identifier */
-			/* for now just int, return and identifiers */
-			if (length == 3 && memcmp(word, "int", 3) == 0) {
-				tokens[ntokens++] = (struct token)
-				{
-					TOKEN_INT, word
-				};
-			} else if (length == 6 && memcmp(word, "return", 6) == 0) {
-				tokens[ntokens++] = (struct token)
-				{
-					TOKEN_RETURN, word
-				};
-			} else if (length == 2 && memcmp(word, "if", 2) == 0) {
-				tokens[ntokens++] = (struct token)
-				{
-					TOKEN_IF, word
-				};
-			} else if (length == 4 && memcmp(word, "else", 4) == 0) {
-				tokens[ntokens++] = (struct token)
-				{
-					TOKEN_ELSE, word
-				};
-			} else if (length == 5 && memcmp(word, "while", 5) == 0) {
-				tokens[ntokens++] = (struct token)
-				{
-					TOKEN_WHILE, word
-				};
-			} else if (length == 3 && memcmp(word, "for", 3) == 0) {
-				tokens[ntokens++] = (struct token)
-				{
-					TOKEN_FOR, word
-				};
-			} else if (length == 5 && memcmp(word, "break", 5) == 0) {
-				tokens[ntokens++] = (struct token)
-				{
-					TOKEN_BREAK, word
-				};
-			} else if (length == 8 && memcmp(word, "continue", 8) == 0) {
-				tokens[ntokens++] = (struct token)
-				{
-					TOKEN_CONTINUE, word
-				};
-			} else {
-				tokens[ntokens++] = (struct token)
-				{
-					TOKEN_IDENTIFIER, word
-				};
-			}
-		}
-
-		/* unknown characters */
-		else {
+			if (length == 3 && memcmp(word, "int", 3) == 0)
+				tokens[ntokens++] = (struct token){ TOKEN_INT, word };
+			else if (length == 6 && memcmp(word, "return", 6) == 0)
+				tokens[ntokens++] = (struct token){ TOKEN_RETURN, word };
+			else if (length == 2 && memcmp(word, "if", 2) == 0)
+				tokens[ntokens++] = (struct token){ TOKEN_IF, word };
+			else if (length == 4 && memcmp(word, "else", 4) == 0)
+				tokens[ntokens++] = (struct token){ TOKEN_ELSE, word };
+			else if (length == 5 && memcmp(word, "while", 5) == 0)
+				tokens[ntokens++] = (struct token){ TOKEN_WHILE, word };
+			else if (length == 3 && memcmp(word, "for", 3) == 0)
+				tokens[ntokens++] = (struct token){ TOKEN_FOR, word };
+			else if (length == 5 && memcmp(word, "break", 5) == 0)
+				tokens[ntokens++] = (struct token){ TOKEN_BREAK, word };
+			else if (length == 8 && memcmp(word, "continue", 8) == 0)
+				tokens[ntokens++] = (struct token){ TOKEN_CONTINUE, word };
+			else
+				tokens[ntokens++] = (struct token){ TOKEN_IDENTIFIER, word };
+		} else {
 			fprintf(stderr, "redix: unexpected character '%c'\n", source[position]);
 			exit(1);
-		}	
+		}
 	}
 
-	/* add EOF token at the end */
 	tokens[ntokens++] = make_token(TOKEN_EOF, "EOF");
-
 	*count = ntokens;
 	return tokens;
 }

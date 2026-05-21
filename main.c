@@ -16,7 +16,7 @@ void print_ast(struct ast_node *node, int depth)
 	case NODE_PROGRAM:	printf("Program\n"); break;
 	case NODE_FUNCTION:	printf("Function: %s\n", node->value); break;
 	case NODE_RETURN:	printf("Return\n"); break;
-	case NODE_NUMBER:	printf("Number: %s\n", node->value); break;	
+	case NODE_NUMBER:	printf("Number: %s\n", node->value); break;
 	case NODE_UNARY:	printf("Unary: %s\n", node->value); break;
 	case NODE_BINARY:	printf("Binary: %s\n", node->value); break;
 	case NODE_DECLARATION:	printf("Declaration: %s\n", node->value); break;
@@ -26,19 +26,24 @@ void print_ast(struct ast_node *node, int depth)
 	case NODE_IF:		printf("If\n"); break;
 	case NODE_WHILE:	printf("While\n"); break;
 	case NODE_FOR:		printf("For\n"); break;
+	case NODE_BREAK:	printf("Break\n"); break;
+	case NODE_CONTINUE:	printf("Continue\n"); break;
+	case NODE_CALL:		printf("Call: %s\n", node->value); break;
 	}
 
 	for (i = 0; i < node->child_count; i++)
 		print_ast(node->children[i], depth + 1);
 }
 
-int main(int argc, char **argv) {
+int main(int argc, char **argv)
+{
 	FILE *file;
+	FILE *outfile;
 	long length;
 	char *source;
 	int count;
-	int i;	
-	struct token *tokens;	
+	int i;
+	struct token *tokens;
 	struct ast_node *ast;
 
 	if (argc < 2) {
@@ -47,12 +52,12 @@ int main(int argc, char **argv) {
 	}
 
 	file = fopen(argv[1], "r");
-
-	/* turn the entire source file into a string */
 	if (!file) {
 		fprintf(stderr, "redix: cannot open '%s'\n", argv[1]);
 		return 1;
 	}
+
+	/* read entire source file into a string */
 	fseek(file, 0, SEEK_END);
 	length = ftell(file);
 	fseek(file, 0, SEEK_SET);
@@ -61,33 +66,26 @@ int main(int argc, char **argv) {
 	source[length] = '\0';
 	fclose(file);
 
-	/* tokenize */
 	tokens = lexer_tokenize(source, &count);
+	free(source);
 
 	/* print tokens for debugging */
-	for (i = 0; i < count; i++) {
+	for (i = 0; i < count; i++)
 		printf("%-18s %s\n", token_type_name(tokens[i].type), tokens[i].value);
-	}
-
-	free(source);
 
 	ast = parse(tokens, count);
 	print_ast(ast, 0);
 
-	{
-		FILE *outfile;
-		outfile = fopen("out.s", "w");
-		if (!outfile) {
-			fprintf(stderr, "redix: cannot open out.s for writing\n");
-			return 1;
-		}
-		codegen(ast, outfile);
-		fclose(outfile);
-		printf("wrote out.s\n");
+	outfile = fopen("out.s", "w");
+	if (!outfile) {
+		fprintf(stderr, "redix: cannot open out.s for writing\n");
+		return 1;
 	}
+	codegen(ast, outfile);
+	fclose(outfile);
+	printf("wrote out.s\n");
 
 	free_ast(ast);
 	free(tokens);
-
 	return 0;
 }

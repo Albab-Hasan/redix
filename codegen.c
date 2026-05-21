@@ -125,6 +125,21 @@ static void gen_expression(struct ast_node *node)
 		int offset = find_var(node->value);
 		gen_expression(node->children[0]);
 		emit("\tmovl %%eax, %d(%%rbp)", offset);
+	} else if (node->type == NODE_CALL) {
+		int i;
+		int nargs = node->child_count;
+		static const char *arg_regs[] = {
+			"%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"
+		};
+		/* evaluate args left-to-right, push each onto stack */
+		for (i = 0; i < nargs; i++) {
+			gen_expression(node->children[i]);
+			emit("\tpush %%rax");
+		}
+		/* pop right-to-left so arg0 ends up in rdi */
+		for (i = nargs - 1; i >= 0; i--)
+			emit("\tpop %s", arg_regs[i]);
+		emit("\tcall %s", node->value);
 	} else {
 		fprintf(stderr, "codegen: unknown expression type\n");
 		exit(1);
@@ -229,29 +244,43 @@ static int count_declarations(struct ast_node *node)
 
 static void gen_function(struct ast_node *node)
 {
-	int num_vars;
+	int i;
+	int num_params;
+	int num_locals;
 	int alloc_size;
 	struct ast_node *body;
+	static const char *param_regs[] = {
+		"%edi", "%esi", "%edx", "%ecx", "%r8d", "%r9d"
+	};
 
-	/* reset variable state */
+	/* reset variable state per function */
 	var_count = 0;
 	stack_offset = 0;
 	loop_break_label[0] = '\0';
 	loop_cont_label[0] = '\0';
+
+	/* body is always last child; preceding children are params */
+	body = node->children[node->child_count - 1];
+	num_params = node->child_count - 1;
 
 	emit(".global %s", node->value);
 	emit("%s:", node->value);
 	emit("\tpushq %%rbp");
 	emit("\tmovq %%rsp, %%rbp");
 
-	/* reserve stack space for locals aligned to 16 */
-	body = node->children[0];
-	num_vars = count_declarations(body);
-	if (num_vars > 0) {
-		alloc_size = num_vars * 4;
+	/* reserve stack for both params and locals, aligned to 16 */
+	num_locals = count_declarations(body);
+	alloc_size = (num_params + num_locals) * 4;
+	if (alloc_size > 0) {
 		if (alloc_size % 16 != 0)
-			alloc_size = alloc_size + (16 - alloc_size % 16);
+			alloc_size += 16 - (alloc_size % 16);
 		emit("\tsubq $%d, %%rsp", alloc_size);
+	}
+
+	/* copy params from argument registers onto the stack */
+	for (i = 0; i < num_params && i < 6; i++) {
+		int offset = declare_var(node->children[i]->value);
+		emit("\tmovl %s, %d(%%rbp)", param_regs[i], offset);
 	}
 
 	gen_statement(body);

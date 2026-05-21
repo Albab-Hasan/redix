@@ -34,6 +34,7 @@ enum token_type {
 	TOKEN_FOR,
 	TOKEN_BREAK,
 	TOKEN_CONTINUE,
+	TOKEN_COMMA,
 };
 
 /* a tokens type and the actual text it came from */
