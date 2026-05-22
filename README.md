@@ -15,7 +15,31 @@ code generation. Currently it supports:
 - `while` loops
 - `for` loops
 - `break` and `continue`
-- multiple functions with parameters and calls
+- multiple functions with up to 6 parameters and calls
+- `//` line comments
+
+## Building
+
+```
+make
+```
+
+## Usage
+
+```
+./redix input.c
+gcc -o out out.s
+./out
+```
+
+## Tests
+
+```
+make test
+```
+
+Test files live in `tests/`. Each file has a `// expect: N` comment on the
+first line indicating the expected exit code.
 
 ## License
 
