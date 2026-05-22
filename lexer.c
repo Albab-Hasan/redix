@@ -136,8 +136,13 @@ struct token *lexer_tokenize(const char *source, int *count)
 			tokens[ntokens++] = make_token(TOKEN_STAR, "*");
 			position++;
 		} else if (source[position] == '/') {
-			tokens[ntokens++] = make_token(TOKEN_SLASH, "/");
-			position++;
+			if (source[position + 1] == '/') {
+				while (source[position] != '\0' && source[position] != '\n')
+					position++;
+			} else {
+				tokens[ntokens++] = make_token(TOKEN_SLASH, "/");
+				position++;
+			}
 		} else if (source[position] == '&') {
 			if (source[position + 1] == '&') {
 				tokens[ntokens++] = make_token(TOKEN_AND, "&&");

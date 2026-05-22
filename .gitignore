@@ -2,3 +2,10 @@ redix
 out
 out.o
 out.s
+*.o
+t
+t1
+t2
+t3
+t4
+test_var
