@@ -18,7 +18,7 @@ static struct token *current(void)
 static struct token *expect(enum token_type type)
 {
 	if (position >= token_count || current()->type != type) {
-		fprintf(stderr, "parser: unexpected token '%s'\n", 
+		fprintf(stderr, "parser: unexpected token '%s'\n",
 				current()->value);
 		exit(1);
 	}
@@ -48,7 +48,7 @@ static void add_child(struct ast_node *parent, struct ast_node *child)
 static struct ast_node *parse_statement(void);
 static struct ast_node *parse_expression(void);
 
-/* number, variable, function call, or parenthesized expression */
+/* number variable function call or parenthesized expression */
 static struct ast_node *parse_primary(void)
 {
 	struct token *tok;
@@ -57,7 +57,9 @@ static struct ast_node *parse_primary(void)
 	if (current()->type == TOKEN_NUMBER) {
 		tok = &tokens[position++];
 		return make_node(NODE_NUMBER, tok->value);
-	} else if (current()->type == TOKEN_IDENTIFIER) {
+	}
+
+	if (current()->type == TOKEN_IDENTIFIER) {
 		tok = &tokens[position++];
 		if (current()->type == TOKEN_LPAREN) {
 			position++; /* consume ( */
@@ -71,20 +73,22 @@ static struct ast_node *parse_primary(void)
 			return node;
 		}
 		return make_node(NODE_VAR, tok->value);
-	} else if (current()->type == TOKEN_LPAREN) {
+	}
+
+	if (current()->type == TOKEN_LPAREN) {
 		position++; /* consume ( */
 		node = parse_expression();
 		expect(TOKEN_RPAREN);
 		return node;
 	}
 
-	fprintf(stderr, "parser: expected number or variable, got '%s'\n",
+	fprintf(stderr, "parser: expected number or variable got '%s'\n",
 			current()->value);
 	exit(1);
 	return NULL;
 }
 
-/* unary operators -, ~, ! */
+/* unary operators - ~ ! */
 static struct ast_node *parse_unary(void)
 {
 	struct token *tok;
@@ -101,116 +105,86 @@ static struct ast_node *parse_unary(void)
 	return parse_primary();
 }
 
-/* multiplicative * and / */
+/* generic left-associative binary parser
+ * matchfn tells us which token types are operators at this level
+ * next is the parser for the tighter precedence level below us */
+static struct ast_node *parse_binop(struct ast_node *(*next)(void),
+		int (*matchfn)(enum token_type))
+{
+	struct ast_node *left;
+	struct ast_node *node;
+	struct token *op;
+
+	left = next();
+	while (matchfn(current()->type)) {
+		op = &tokens[position++];
+		node = make_node(NODE_BINARY, op->value);
+		add_child(node, left);
+		add_child(node, next());
+		left = node;
+	}
+	return left;
+}
+
+static int is_mul(enum token_type t)
+{
+	return t == TOKEN_STAR || t == TOKEN_SLASH;
+}
+
+static int is_add(enum token_type t)
+{
+	return t == TOKEN_PLUS || t == TOKEN_MINUS;
+}
+
+static int is_rel(enum token_type t)
+{
+	return t == TOKEN_LT || t == TOKEN_GT
+			|| t == TOKEN_LTE || t == TOKEN_GTE;
+}
+
+static int is_eq(enum token_type t)
+{
+	return t == TOKEN_EQ || t == TOKEN_NEQ;
+}
+
+static int is_and(enum token_type t)
+{
+	return t == TOKEN_AND;
+}
+
+static int is_or(enum token_type t)
+{
+	return t == TOKEN_OR;
+}
+
 static struct ast_node *parse_multiplicative(void)
 {
-	struct ast_node *left;
-	struct ast_node *node;
-
-	left = parse_unary();
-
-	while (current()->type == TOKEN_STAR ||
-			current()->type == TOKEN_SLASH) {
-		struct token *op = &tokens[position++];
-		node = make_node(NODE_BINARY, op->value);
-		add_child(node, left);
-		add_child(node, parse_unary());
-		left = node;
-	}
-
-	return left;
+	return parse_binop(parse_unary, is_mul);
 }
 
-/* additive + and - */
 static struct ast_node *parse_additive(void)
 {
-	struct ast_node *left;
-	struct ast_node *node;
-
-	left = parse_multiplicative();
-
-	while (current()->type == TOKEN_PLUS ||
-			current()->type == TOKEN_MINUS) {
-		struct token *op = &tokens[position++];
-		node = make_node(NODE_BINARY, op->value);
-		add_child(node, left);
-		add_child(node, parse_multiplicative());
-		left = node;
-	}
-	return left;
+	return parse_binop(parse_multiplicative, is_add);
 }
 
-/* relational <, >, <=, >= */
 static struct ast_node *parse_relational(void)
 {
-	struct ast_node *left;
-	struct ast_node *node;
-
-	left = parse_additive();
-
-	while (current()->type == TOKEN_LT || current()->type == TOKEN_GT ||
-			current()->type == TOKEN_LTE || current()->type == TOKEN_GTE) {
-		struct token *op = &tokens[position++];
-		node = make_node(NODE_BINARY, op->value);
-		add_child(node, left);
-		add_child(node, parse_additive());
-		left = node;
-	}
-	return left;
+	return parse_binop(parse_additive, is_rel);
 }
 
-/* equality ==, != */
 static struct ast_node *parse_equality(void)
 {
-	struct ast_node *left;
-	struct ast_node *node;
-
-	left = parse_relational();
-
-	while (current()->type == TOKEN_EQ || current()->type == TOKEN_NEQ) {
-		struct token *op = &tokens[position++];
-		node = make_node(NODE_BINARY, op->value);
-		add_child(node, left);
-		add_child(node, parse_relational());
-		left = node;
-	}
-	return left;
+	return parse_binop(parse_relational, is_eq);
 }
 
-/* logical and && */
 static struct ast_node *parse_logical_and(void)
 {
-	struct ast_node *left;
-	struct ast_node *node;
-
-	left = parse_equality();
-
-	while (current()->type == TOKEN_AND) {
-		struct token *op = &tokens[position++];
-		node = make_node(NODE_BINARY, op->value);
-		add_child(node, left);
-		add_child(node, parse_equality());
-		left = node;
-	}
-	return left;
+	return parse_binop(parse_equality, is_and);
 }
 
-/* logical or || */
 static struct ast_node *parse_logical_or(void)
 {
-	struct ast_node *left;
-	struct ast_node *node;
-
-	left = parse_logical_and();
-
-	while (current()->type == TOKEN_OR) {
-		struct token *op = &tokens[position++];
-		node = make_node(NODE_BINARY, op->value);
-		add_child(node, left);
-		add_child(node, parse_logical_and());
-		left = node;
-	}
-	return left;
+	return parse_binop(parse_logical_and, is_or);
 }
 
 /* assignment or regular expression */
@@ -245,102 +219,126 @@ static struct ast_node *parse_block(void)
 	return node;
 }
 
+static struct ast_node *parse_return(void)
+{
+	struct ast_node *node;
+
+	position++;
+	node = make_node(NODE_RETURN, NULL);
+	/* bare return for void functions */
+	if (current()->type != TOKEN_SEMICOLON)
+		add_child(node, parse_expression());
+	expect(TOKEN_SEMICOLON);
+	return node;
+}
+
+static struct ast_node *parse_declaration(void)
+{
+	struct token *name;
+	struct ast_node *node;
+
+	position++; /* consume int */
+	name = expect(TOKEN_IDENTIFIER);
+	node = make_node(NODE_DECLARATION, name->value);
+	if (current()->type == TOKEN_ASSIGN) {
+		position++;
+		add_child(node, parse_expression());
+	}
+	expect(TOKEN_SEMICOLON);
+	return node;
+}
+
+static struct ast_node *parse_if(void)
+{
+	struct ast_node *node;
+
+	position++;
+	node = make_node(NODE_IF, NULL);
+	expect(TOKEN_LPAREN);
+	add_child(node, parse_expression()); /* condition */
+	expect(TOKEN_RPAREN);
+	add_child(node, parse_statement());  /* then */
+	if (current()->type == TOKEN_ELSE) {
+		position++;
+		add_child(node, parse_statement()); /* else */
+	}
+	return node;
+}
+
+static struct ast_node *parse_while(void)
+{
+	struct ast_node *node;
+
+	position++;
+	node = make_node(NODE_WHILE, NULL);
+	expect(TOKEN_LPAREN);
+	add_child(node, parse_expression()); /* condition */
+	expect(TOKEN_RPAREN);
+	add_child(node, parse_statement());  /* body */
+	return node;
+}
+
+static struct ast_node *parse_for(void)
+{
+	struct ast_node *node;
+
+	position++;
+	node = make_node(NODE_FOR, NULL);
+	expect(TOKEN_LPAREN);
+	add_child(node, parse_expression()); /* init */
+	expect(TOKEN_SEMICOLON);
+	add_child(node, parse_expression()); /* condition */
+	expect(TOKEN_SEMICOLON);
+	add_child(node, parse_expression()); /* increment */
+	expect(TOKEN_RPAREN);
+	add_child(node, parse_statement());  /* body */
+	return node;
+}
+
+static struct ast_node *parse_simple_keyword(enum node_type type)
+{
+	struct ast_node *node;
+
+	position++;
+	node = make_node(type, NULL);
+	expect(TOKEN_SEMICOLON);
+	return node;
+}
+
 /* parse a single statement */
 static struct ast_node *parse_statement(void)
 {
 	struct ast_node *node;
 
-	if (current()->type == TOKEN_LBRACE)
-		return parse_block();
-
-	if (current()->type == TOKEN_RETURN) {
-		position++;
-		node = make_node(NODE_RETURN, NULL);
-		add_child(node, parse_expression());
+	switch (current()->type) {
+	case TOKEN_LBRACE:	return parse_block();
+	case TOKEN_RETURN:	return parse_return();
+	case TOKEN_INT:		return parse_declaration();
+	case TOKEN_IF:		return parse_if();
+	case TOKEN_WHILE:	return parse_while();
+	case TOKEN_FOR:		return parse_for();
+	case TOKEN_BREAK:	return parse_simple_keyword(NODE_BREAK);
+	case TOKEN_CONTINUE:	return parse_simple_keyword(NODE_CONTINUE);
+	default:
+		/* expression statement like assignments */
+		node = parse_expression();
 		expect(TOKEN_SEMICOLON);
 		return node;
 	}
-
-	/* int x or int x = expr */
-	if (current()->type == TOKEN_INT) {
-		struct token *name;
-		position++;
-		name = expect(TOKEN_IDENTIFIER);
-		node = make_node(NODE_DECLARATION, name->value);
-		if (current()->type == TOKEN_ASSIGN) {
-			position++;
-			add_child(node, parse_expression());
-		}
-		expect(TOKEN_SEMICOLON);
-		return node;
-	}
-
-	if (current()->type == TOKEN_IF) {
-		position++;
-		node = make_node(NODE_IF, NULL);
-		expect(TOKEN_LPAREN);
-		add_child(node, parse_expression()); /* condition */
-		expect(TOKEN_RPAREN);
-		add_child(node, parse_statement());  /* then */
-		if (current()->type == TOKEN_ELSE) {
-			position++;
-			add_child(node, parse_statement()); /* else */
-		}
-		return node;
-	}
-
-	if (current()->type == TOKEN_WHILE) {
-		position++;
-		node = make_node(NODE_WHILE, NULL);
-		expect(TOKEN_LPAREN);
-		add_child(node, parse_expression()); /* condition */
-		expect(TOKEN_RPAREN);
-		add_child(node, parse_statement());  /* body */
-		return node;
-	}
-
-	if (current()->type == TOKEN_FOR) {
-		position++;
-		node = make_node(NODE_FOR, NULL);
-		expect(TOKEN_LPAREN);
-		add_child(node, parse_expression()); /* init */
-		expect(TOKEN_SEMICOLON);
-		add_child(node, parse_expression()); /* condition */
-		expect(TOKEN_SEMICOLON);
-		add_child(node, parse_expression()); /* increment */
-		expect(TOKEN_RPAREN);
-		add_child(node, parse_statement());  /* body */
-		return node;
-	}
-
-	if (current()->type == TOKEN_BREAK) {
-		position++;
-		node = make_node(NODE_BREAK, NULL);
-		expect(TOKEN_SEMICOLON);
-		return node;
-	}
-
-	if (current()->type == TOKEN_CONTINUE) {
-		position++;
-		node = make_node(NODE_CONTINUE, NULL);
-		expect(TOKEN_SEMICOLON);
-		return node;
-	}
-
-	/* expression statement like assignments */
-	node = parse_expression();
-	expect(TOKEN_SEMICOLON);
-	return node;
 }
 
-/* parse a function — params stored as NODE_DECLARATION children before body */
+/* parse a function -- params stored as NODE_DECLARATION children before body */
 static struct ast_node *parse_function(void)
 {
 	struct token *name;
 	struct token *pname;
 	struct ast_node *node;
 
-	expect(TOKEN_INT);
+	/* return type int or void for now we just consume it */
+	if (current()->type == TOKEN_INT || current()->type == TOKEN_VOID)
+		position++;
+	else
+		expect(TOKEN_INT);
 	name = expect(TOKEN_IDENTIFIER);
 	node = make_node(NODE_FUNCTION, name->value);
 	expect(TOKEN_LPAREN);
@@ -376,7 +374,7 @@ void free_ast(struct ast_node *node)
 {
 	int i;
 
-	if (!node) 
+	if (!node)
 		return;
 	for (i = 0; i < node->child_count; i++)
 		free_ast(node->children[i]);

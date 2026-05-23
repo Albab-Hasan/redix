@@ -17,6 +17,7 @@ const char *token_type_name(enum token_type type)
 {
 	switch (type) {
 	case TOKEN_INT:		return "TOKEN_INT";
+	case TOKEN_VOID:	return "TOKEN_VOID";
 	case TOKEN_RETURN:	return "TOKEN_RETURN";
 	case TOKEN_IDENTIFIER:	return "TOKEN_IDENTIFIER";
 	case TOKEN_NUMBER:	return "TOKEN_NUMBER";
@@ -48,8 +49,77 @@ const char *token_type_name(enum token_type type)
 	case TOKEN_BREAK:	return "TOKEN_BREAK";
 	case TOKEN_CONTINUE:	return "TOKEN_CONTINUE";
 	case TOKEN_COMMA:	return "TOKEN_COMMA";
-	default:		return "UNKNOWN";
 	}
+	return "UNKNOWN";
+}
+
+/* keyword lookup table -- order does not matter */
+static const struct {
+	const char *word;
+	enum token_type type;
+} keywords[] = {
+	{ "int",      TOKEN_INT },
+	{ "void",     TOKEN_VOID },
+	{ "return",   TOKEN_RETURN },
+	{ "if",       TOKEN_IF },
+	{ "else",     TOKEN_ELSE },
+	{ "while",    TOKEN_WHILE },
+	{ "for",      TOKEN_FOR },
+	{ "break",    TOKEN_BREAK },
+	{ "continue", TOKEN_CONTINUE },
+};
+
+#define NKEYWORDS (sizeof(keywords) / sizeof(keywords[0]))
+
+/* match an identifier-shaped word against the keyword table
+ * returns TOKEN_IDENTIFIER if no keyword matches */
+static enum token_type lookup_keyword(const char *word)
+{
+	size_t i;
+
+	for (i = 0; i < NKEYWORDS; i++) {
+		if (strcmp(word, keywords[i].word) == 0)
+			return keywords[i].type;
+	}
+	return TOKEN_IDENTIFIER;
+}
+
+/* scan a number literal starting at *pos and append a TOKEN_NUMBER */
+static void scan_number(const char *source, int *pos,
+		struct token *tokens, int *ntokens)
+{
+	int start = *pos;
+	int length;
+	char *number;
+
+	while (isdigit(source[*pos]))
+		(*pos)++;
+	length = *pos - start;
+	number = malloc(length + 1);
+	memcpy(number, &source[start], length);
+	number[length] = '\0';
+	tokens[(*ntokens)++] = (struct token){ TOKEN_NUMBER, number };
+}
+
+/* scan an identifier or keyword starting at *pos */
+static void scan_identifier(const char *source, int *pos,
+		struct token *tokens, int *ntokens)
+{
+	int start = *pos;
+	int length;
+	char *word;
+	enum token_type type;
+
+	while (isalpha(source[*pos]) || isdigit(source[*pos])
+			|| source[*pos] == '_')
+		(*pos)++;
+	length = *pos - start;
+	word = malloc(length + 1);
+	memcpy(word, &source[start], length);
+	word[length] = '\0';
+
+	type = lookup_keyword(word);
+	tokens[(*ntokens)++] = (struct token){ type, word };
 }
 
 struct token *lexer_tokenize(const char *source, int *count)
@@ -58,6 +128,7 @@ struct token *lexer_tokenize(const char *source, int *count)
 	int ntokens = 0;
 	int position = 0;
 	struct token *tokens = malloc(sizeof(struct token) * capacity);
+	char c;
 
 	while (source[position] != '\0') {
 
@@ -67,37 +138,67 @@ struct token *lexer_tokenize(const char *source, int *count)
 			continue;
 		}
 
+		/* skip line comments */
+		if (source[position] == '/' && source[position + 1] == '/') {
+			while (source[position] != '\0' && source[position] != '\n')
+				position++;
+			continue;
+		}
+
 		/* grow the array if needed */
 		if (ntokens + 1 >= capacity) {
 			capacity *= 2;
 			tokens = realloc(tokens, sizeof(struct token) * capacity);
 		}
 
-		if (source[position] == '(') {
+		c = source[position];
+
+		switch (c) {
+		case '(':
 			tokens[ntokens++] = make_token(TOKEN_LPAREN, "(");
 			position++;
-		} else if (source[position] == ')') {
+			break;
+		case ')':
 			tokens[ntokens++] = make_token(TOKEN_RPAREN, ")");
 			position++;
-		} else if (source[position] == '{') {
+			break;
+		case '{':
 			tokens[ntokens++] = make_token(TOKEN_LBRACE, "{");
 			position++;
-		} else if (source[position] == '}') {
+			break;
+		case '}':
 			tokens[ntokens++] = make_token(TOKEN_RBRACE, "}");
 			position++;
-		} else if (source[position] == ';') {
+			break;
+		case ';':
 			tokens[ntokens++] = make_token(TOKEN_SEMICOLON, ";");
 			position++;
-		} else if (source[position] == ',') {
+			break;
+		case ',':
 			tokens[ntokens++] = make_token(TOKEN_COMMA, ",");
 			position++;
-		} else if (source[position] == '-') {
+			break;
+		case '+':
+			tokens[ntokens++] = make_token(TOKEN_PLUS, "+");
+			position++;
+			break;
+		case '-':
 			tokens[ntokens++] = make_token(TOKEN_MINUS, "-");
 			position++;
-		} else if (source[position] == '~') {
+			break;
+		case '*':
+			tokens[ntokens++] = make_token(TOKEN_STAR, "*");
+			position++;
+			break;
+		case '/':
+			tokens[ntokens++] = make_token(TOKEN_SLASH, "/");
+			position++;
+			break;
+		case '~':
 			tokens[ntokens++] = make_token(TOKEN_TILDE, "~");
 			position++;
-		} else if (source[position] == '!') {
+			break;
+		case '!':
 			if (source[position + 1] == '=') {
 				tokens[ntokens++] = make_token(TOKEN_NEQ, "!=");
 				position += 2;
@@ -105,7 +206,8 @@ struct token *lexer_tokenize(const char *source, int *count)
 				tokens[ntokens++] = make_token(TOKEN_BANG, "!");
 				position++;
 			}
-		} else if (source[position] == '<') {
+			break;
+		case '<':
 			if (source[position + 1] == '=') {
 				tokens[ntokens++] = make_token(TOKEN_LTE, "<=");
 				position += 2;
@@ -113,7 +215,8 @@ struct token *lexer_tokenize(const char *source, int *count)
 				tokens[ntokens++] = make_token(TOKEN_LT, "<");
 				position++;
 			}
-		} else if (source[position] == '>') {
+			break;
+		case '>':
 			if (source[position + 1] == '=') {
 				tokens[ntokens++] = make_token(TOKEN_GTE, ">=");
 				position += 2;
@@ -121,7 +224,8 @@ struct token *lexer_tokenize(const char *source, int *count)
 				tokens[ntokens++] = make_token(TOKEN_GT, ">");
 				position++;
 			}
-		} else if (source[position] == '=') {
+			break;
+		case '=':
 			if (source[position + 1] == '=') {
 				tokens[ntokens++] = make_token(TOKEN_EQ, "==");
 				position += 2;
@@ -129,21 +233,8 @@ struct token *lexer_tokenize(const char *source, int *count)
 				tokens[ntokens++] = make_token(TOKEN_ASSIGN, "=");
 				position++;
 			}
-		} else if (source[position] == '+') {
-			tokens[ntokens++] = make_token(TOKEN_PLUS, "+");
-			position++;
-		} else if (source[position] == '*') {
-			tokens[ntokens++] = make_token(TOKEN_STAR, "*");
-			position++;
-		} else if (source[position] == '/') {
-			if (source[position + 1] == '/') {
-				while (source[position] != '\0' && source[position] != '\n')
-					position++;
-			} else {
-				tokens[ntokens++] = make_token(TOKEN_SLASH, "/");
-				position++;
-			}
-		} else if (source[position] == '&') {
+			break;
+		case '&':
 			if (source[position + 1] == '&') {
 				tokens[ntokens++] = make_token(TOKEN_AND, "&&");
 				position += 2;
@@ -151,7 +242,8 @@ struct token *lexer_tokenize(const char *source, int *count)
 				fprintf(stderr, "redix: unexpected character '&'\n");
 				exit(1);
 			}
-		} else if (source[position] == '|') {
+			break;
+		case '|':
 			if (source[position + 1] == '|') {
 				tokens[ntokens++] = make_token(TOKEN_OR, "||");
 				position += 2;
@@ -159,52 +251,17 @@ struct token *lexer_tokenize(const char *source, int *count)
 				fprintf(stderr, "redix: unexpected character '|'\n");
 				exit(1);
 			}
-		} else if (isdigit(source[position])) {
-			int start = position;
-			int length;
-			char *number;
-
-			while (isdigit(source[position]))
-				position++;
-			length = position - start;
-			number = malloc(length + 1);
-			memcpy(number, &source[start], length);
-			number[length] = '\0';
-			tokens[ntokens++] = (struct token){ TOKEN_NUMBER, number };
-		} else if (isalpha(source[position]) || source[position] == '_') {
-			int start = position;
-			int length;
-			char *word;
-
-			while (isalpha(source[position]) || isdigit(source[position])
-					|| source[position] == '_')
-				position++;
-			length = position - start;
-			word = malloc(length + 1);
-			memcpy(word, &source[start], length);
-			word[length] = '\0';
-
-			if (length == 3 && memcmp(word, "int", 3) == 0)
-				tokens[ntokens++] = (struct token){ TOKEN_INT, word };
-			else if (length == 6 && memcmp(word, "return", 6) == 0)
-				tokens[ntokens++] = (struct token){ TOKEN_RETURN, word };
-			else if (length == 2 && memcmp(word, "if", 2) == 0)
-				tokens[ntokens++] = (struct token){ TOKEN_IF, word };
-			else if (length == 4 && memcmp(word, "else", 4) == 0)
-				tokens[ntokens++] = (struct token){ TOKEN_ELSE, word };
-			else if (length == 5 && memcmp(word, "while", 5) == 0)
-				tokens[ntokens++] = (struct token){ TOKEN_WHILE, word };
-			else if (length == 3 && memcmp(word, "for", 3) == 0)
-				tokens[ntokens++] = (struct token){ TOKEN_FOR, word };
-			else if (length == 5 && memcmp(word, "break", 5) == 0)
-				tokens[ntokens++] = (struct token){ TOKEN_BREAK, word };
-			else if (length == 8 && memcmp(word, "continue", 8) == 0)
-				tokens[ntokens++] = (struct token){ TOKEN_CONTINUE, word };
-			else
-				tokens[ntokens++] = (struct token){ TOKEN_IDENTIFIER, word };
-		} else {
-			fprintf(stderr, "redix: unexpected character '%c'\n", source[position]);
-			exit(1);
+			break;
+		default:
+			if (isdigit(c)) {
+				scan_number(source, &position, tokens, &ntokens);
+			} else if (isalpha(c) || c == '_') {
+				scan_identifier(source, &position, tokens, &ntokens);
+			} else {
+				fprintf(stderr, "redix: unexpected character '%c'\n", c);
+				exit(1);
+			}
+			break;
 		}
 	}
 
