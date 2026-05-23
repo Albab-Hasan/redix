@@ -16,6 +16,7 @@ code generation. Currently it supports:
 - `for` loops
 - `break` and `continue`
 - multiple functions with up to 6 parameters and calls
+- `void` return type and bare `return;`
 - `//` line comments
 
 ## Building
