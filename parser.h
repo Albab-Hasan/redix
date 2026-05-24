@@ -20,7 +20,11 @@ enum node_type {
 	NODE_FOR,
 	NODE_BREAK,
 	NODE_CONTINUE,
-	NODE_CALL
+	NODE_CALL,
+	NODE_PREFIX_INC,
+	NODE_PREFIX_DEC,
+	NODE_POSTFIX_INC,
+	NODE_POSTFIX_DEC,
 };
 
 /* a node in the abstrct syntax tree that can have child nodes */

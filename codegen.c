@@ -170,6 +170,40 @@ static void gen_assign(struct ast_node *node)
 	emit("\tmovl %%eax, %d(%%rbp)", offset);
 }
 
+/* prefix: increment/decrement first, result is the new value */
+static void gen_prefix_inc(struct ast_node *node)
+{
+	int offset = find_var(node->value);
+
+	emit("\taddl $1, %d(%%rbp)", offset);
+	emit("\tmovl %d(%%rbp), %%eax", offset);
+}
+
+static void gen_prefix_dec(struct ast_node *node)
+{
+	int offset = find_var(node->value);
+
+	emit("\tsubl $1, %d(%%rbp)", offset);
+	emit("\tmovl %d(%%rbp), %%eax", offset);
+}
+
+/* postfix: load old value into eax first, then mutate memory */
+static void gen_postfix_inc(struct ast_node *node)
+{
+	int offset = find_var(node->value);
+
+	emit("\tmovl %d(%%rbp), %%eax", offset);
+	emit("\taddl $1, %d(%%rbp)", offset);
+}
+
+static void gen_postfix_dec(struct ast_node *node)
+{
+	int offset = find_var(node->value);
+
+	emit("\tmovl %d(%%rbp), %%eax", offset);
+	emit("\tsubl $1, %d(%%rbp)", offset);
+}
+
 static void gen_call(struct ast_node *node)
 {
 	static const char *arg_regs[] = {
@@ -192,12 +226,16 @@ static void gen_call(struct ast_node *node)
 static void gen_expression(struct ast_node *node)
 {
 	switch (node->type) {
-	case NODE_NUMBER:	gen_number(node);	break;
-	case NODE_UNARY:	gen_unary(node);	break;
-	case NODE_BINARY:	gen_binary(node);	break;
-	case NODE_VAR:		gen_var(node);		break;
-	case NODE_ASSIGN:	gen_assign(node);	break;
-	case NODE_CALL:		gen_call(node);		break;
+	case NODE_NUMBER:		gen_number(node);		break;
+	case NODE_UNARY:		gen_unary(node);		break;
+	case NODE_BINARY:		gen_binary(node);		break;
+	case NODE_VAR:			gen_var(node);			break;
+	case NODE_ASSIGN:		gen_assign(node);		break;
+	case NODE_CALL:			gen_call(node);			break;
+	case NODE_PREFIX_INC:		gen_prefix_inc(node);		break;
+	case NODE_PREFIX_DEC:		gen_prefix_dec(node);		break;
+	case NODE_POSTFIX_INC:		gen_postfix_inc(node);		break;
+	case NODE_POSTFIX_DEC:		gen_postfix_dec(node);		break;
 	default:
 		fprintf(stderr, "codegen: bad expression node type %d\n",
 				node->type);
@@ -337,6 +375,10 @@ static void gen_statement(struct ast_node *node)
 	case NODE_UNARY:
 	case NODE_NUMBER:
 	case NODE_CALL:
+	case NODE_PREFIX_INC:
+	case NODE_PREFIX_DEC:
+	case NODE_POSTFIX_INC:
+	case NODE_POSTFIX_DEC:
 		/* expression statement */
 		gen_expression(node);
 		break;

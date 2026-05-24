@@ -49,6 +49,8 @@ const char *token_type_name(enum token_type type)
 	case TOKEN_BREAK:	return "TOKEN_BREAK";
 	case TOKEN_CONTINUE:	return "TOKEN_CONTINUE";
 	case TOKEN_COMMA:	return "TOKEN_COMMA";
+	case TOKEN_INC:		return "TOKEN_INC";
+	case TOKEN_DEC:		return "TOKEN_DEC";
 	}
 	return "UNKNOWN";
 }
@@ -179,12 +181,22 @@ struct token *lexer_tokenize(const char *source, int *count)
 			position++;
 			break;
 		case '+':
-			tokens[ntokens++] = make_token(TOKEN_PLUS, "+");
-			position++;
+			if (source[position + 1] == '+') {
+				tokens[ntokens++] = make_token(TOKEN_INC, "++");
+				position += 2;
+			} else {
+				tokens[ntokens++] = make_token(TOKEN_PLUS, "+");
+				position++;
+			}
 			break;
 		case '-':
-			tokens[ntokens++] = make_token(TOKEN_MINUS, "-");
-			position++;
+			if (source[position + 1] == '-') {
+				tokens[ntokens++] = make_token(TOKEN_DEC, "--");
+				position += 2;
+			} else {
+				tokens[ntokens++] = make_token(TOKEN_MINUS, "-");
+				position++;
+			}
 			break;
 		case '*':
 			tokens[ntokens++] = make_token(TOKEN_STAR, "*");

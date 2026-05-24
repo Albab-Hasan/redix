@@ -72,6 +72,14 @@ static struct ast_node *parse_primary(void)
 			expect(TOKEN_RPAREN);
 			return node;
 		}
+		if (current()->type == TOKEN_INC) {
+			position++;
+			return make_node(NODE_POSTFIX_INC, tok->value);
+		}
+		if (current()->type == TOKEN_DEC) {
+			position++;
+			return make_node(NODE_POSTFIX_DEC, tok->value);
+		}
 		return make_node(NODE_VAR, tok->value);
 	}
 
@@ -101,6 +109,14 @@ static struct ast_node *parse_unary(void)
 		node = make_node(NODE_UNARY, tok->value);
 		add_child(node, parse_unary());
 		return node;
+	}
+	if (current()->type == TOKEN_INC || current()->type == TOKEN_DEC) {
+		enum token_type op = current()->type;
+		position++;
+		/* operand must be a plain variable */
+		tok = expect(TOKEN_IDENTIFIER);
+		return make_node(op == TOKEN_INC ? NODE_PREFIX_INC : NODE_PREFIX_DEC,
+				tok->value);
 	}
 	return parse_primary();
 }
