@@ -344,7 +344,7 @@ static void gen_for(struct ast_node *node)
 	sprintf(end_label, ".Lfor_end%d", lbl);
 	push_loop_labels(old_break, old_cont, end_label, inc_label);
 
-	gen_expression(node->children[0]);		/* init */
+	gen_statement(node->children[0]);		/* init: expr or declaration */
 	emit("%s:", cond_label);
 	gen_expression(node->children[1]);		/* condition */
 	emit("\tcmpl $0, %%eax");

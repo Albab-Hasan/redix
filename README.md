@@ -8,6 +8,7 @@ code generation. Currently it supports:
 
 - arithmetic operators: `+`, `-`, `*`, `/`
 - unary operators: `-`, `~`, `!`
+- increment/decrement: prefix `++x`, `--x` and postfix `x++`, `x--`
 - comparison operators: `<`, `>`, `<=`, `>=`, `==`, `!=`
 - logical operators: `&&`, `||`
 - local variable declarations, assignments, and references

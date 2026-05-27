@@ -248,7 +248,8 @@ static struct ast_node *parse_return(void)
 	return node;
 }
 
-static struct ast_node *parse_declaration(void)
+/* parse int name [= expr] without consuming the trailing ; */
+static struct ast_node *parse_declaration_inner(void)
 {
 	struct token *name;
 	struct ast_node *node;
@@ -260,6 +261,12 @@ static struct ast_node *parse_declaration(void)
 		position++;
 		add_child(node, parse_expression());
 	}
+	return node;
+}
+
+static struct ast_node *parse_declaration(void)
+{
+	struct ast_node *node = parse_declaration_inner();
 	expect(TOKEN_SEMICOLON);
 	return node;
 }
@@ -301,7 +308,10 @@ static struct ast_node *parse_for(void)
 	position++;
 	node = make_node(NODE_FOR, NULL);
 	expect(TOKEN_LPAREN);
-	add_child(node, parse_expression()); /* init */
+	if (current()->type == TOKEN_INT)
+		add_child(node, parse_declaration_inner());
+	else
+		add_child(node, parse_expression());
 	expect(TOKEN_SEMICOLON);
 	add_child(node, parse_expression()); /* condition */
 	expect(TOKEN_SEMICOLON);
