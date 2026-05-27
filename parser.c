@@ -380,6 +380,27 @@ static struct ast_node *parse_function(void)
 	return node;
 }
 
+/* global variable declaration: int name [= number]; */
+static struct ast_node *parse_global(void)
+{
+	struct token *name;
+	struct ast_node *node;
+
+	position++; /* consume int */
+	name = expect(TOKEN_IDENTIFIER);
+	node = make_node(NODE_GLOBAL, name->value);
+	if (current()->type == TOKEN_ASSIGN) {
+		position++;
+		if (current()->type != TOKEN_NUMBER) {
+			fprintf(stderr, "parser: global initializer must be a constant\n");
+			exit(1);
+		}
+		add_child(node, make_node(NODE_NUMBER, tokens[position++].value));
+	}
+	expect(TOKEN_SEMICOLON);
+	return node;
+}
+
 /* entry point */
 struct ast_node *parse(struct token *toks, int count)
 {
@@ -390,8 +411,14 @@ struct ast_node *parse(struct token *toks, int count)
 	position = 0;
 
 	program = make_node(NODE_PROGRAM, NULL);
-	while (current()->type != TOKEN_EOF)
-		add_child(program, parse_function());
+	while (current()->type != TOKEN_EOF) {
+		/* peek: int/void NAME ( -> function, otherwise -> global */
+		if (position + 2 < token_count
+				&& tokens[position + 2].type == TOKEN_LPAREN)
+			add_child(program, parse_function());
+		else
+			add_child(program, parse_global());
+	}
 	return program;
 }
 

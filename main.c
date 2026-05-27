@@ -29,6 +29,11 @@ void print_ast(struct ast_node *node, int depth)
 	case NODE_BREAK:	printf("Break\n"); break;
 	case NODE_CONTINUE:	printf("Continue\n"); break;
 	case NODE_CALL:		printf("Call: %s\n", node->value); break;
+	case NODE_GLOBAL:	printf("Global: %s\n", node->value); break;
+	case NODE_PREFIX_INC:	printf("PrefixInc: %s\n", node->value); break;
+	case NODE_PREFIX_DEC:	printf("PrefixDec: %s\n", node->value); break;
+	case NODE_POSTFIX_INC:	printf("PostfixInc: %s\n", node->value); break;
+	case NODE_POSTFIX_DEC:	printf("PostfixDec: %s\n", node->value); break;
 	}
 
 	for (i = 0; i < node->child_count; i++)

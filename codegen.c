@@ -19,6 +19,20 @@ static struct {
 static int var_count;
 static int stack_offset;
 
+#define MAX_GLOBALS 64
+static char *global_vars[MAX_GLOBALS];
+static int global_count;
+
+static int is_global(const char *name)
+{
+	int i;
+
+	for (i = 0; i < global_count; i++)
+		if (strcmp(global_vars[i], name) == 0)
+			return 1;
+	return 0;
+}
+
 /* look up a variable stack offset by name */
 static int find_var(const char *name)
 {
@@ -157,51 +171,67 @@ static void gen_binary(struct ast_node *node)
 
 static void gen_var(struct ast_node *node)
 {
-	int offset = find_var(node->value);
-
-	emit("\tmovl %d(%%rbp), %%eax", offset);
+	if (is_global(node->value)) {
+		emit("\tmovl %s(%%rip), %%eax", node->value);
+		return;
+	}
+	emit("\tmovl %d(%%rbp), %%eax", find_var(node->value));
 }
 
 static void gen_assign(struct ast_node *node)
 {
-	int offset = find_var(node->value);
-
 	gen_expression(node->children[0]);
-	emit("\tmovl %%eax, %d(%%rbp)", offset);
+	if (is_global(node->value)) {
+		emit("\tmovl %%eax, %s(%%rip)", node->value);
+		return;
+	}
+	emit("\tmovl %%eax, %d(%%rbp)", find_var(node->value));
 }
 
 /* prefix: increment/decrement first, result is the new value */
 static void gen_prefix_inc(struct ast_node *node)
 {
-	int offset = find_var(node->value);
-
-	emit("\taddl $1, %d(%%rbp)", offset);
-	emit("\tmovl %d(%%rbp), %%eax", offset);
+	if (is_global(node->value)) {
+		emit("\taddl $1, %s(%%rip)", node->value);
+		emit("\tmovl %s(%%rip), %%eax", node->value);
+		return;
+	}
+	emit("\taddl $1, %d(%%rbp)", find_var(node->value));
+	emit("\tmovl %d(%%rbp), %%eax", find_var(node->value));
 }
 
 static void gen_prefix_dec(struct ast_node *node)
 {
-	int offset = find_var(node->value);
-
-	emit("\tsubl $1, %d(%%rbp)", offset);
-	emit("\tmovl %d(%%rbp), %%eax", offset);
+	if (is_global(node->value)) {
+		emit("\tsubl $1, %s(%%rip)", node->value);
+		emit("\tmovl %s(%%rip), %%eax", node->value);
+		return;
+	}
+	emit("\tsubl $1, %d(%%rbp)", find_var(node->value));
+	emit("\tmovl %d(%%rbp), %%eax", find_var(node->value));
 }
 
 /* postfix: load old value into eax first, then mutate memory */
 static void gen_postfix_inc(struct ast_node *node)
 {
-	int offset = find_var(node->value);
-
-	emit("\tmovl %d(%%rbp), %%eax", offset);
-	emit("\taddl $1, %d(%%rbp)", offset);
+	if (is_global(node->value)) {
+		emit("\tmovl %s(%%rip), %%eax", node->value);
+		emit("\taddl $1, %s(%%rip)", node->value);
+		return;
+	}
+	emit("\tmovl %d(%%rbp), %%eax", find_var(node->value));
+	emit("\taddl $1, %d(%%rbp)", find_var(node->value));
 }
 
 static void gen_postfix_dec(struct ast_node *node)
 {
-	int offset = find_var(node->value);
-
-	emit("\tmovl %d(%%rbp), %%eax", offset);
-	emit("\tsubl $1, %d(%%rbp)", offset);
+	if (is_global(node->value)) {
+		emit("\tmovl %s(%%rip), %%eax", node->value);
+		emit("\tsubl $1, %s(%%rip)", node->value);
+		return;
+	}
+	emit("\tmovl %d(%%rbp), %%eax", find_var(node->value));
+	emit("\tsubl $1, %d(%%rbp)", find_var(node->value));
 }
 
 static void gen_call(struct ast_node *node)
@@ -454,13 +484,41 @@ static void gen_function(struct ast_node *node)
 	emit("\tret");
 }
 
+static void gen_global(struct ast_node *node)
+{
+	int val = node->child_count > 0 ? atoi(node->children[0]->value) : 0;
+
+	emit("\t.globl %s", node->value);
+	emit("\t.align 4");
+	emit("%s:", node->value);
+	emit("\t.long %d", val);
+}
+
 static void gen_program(struct ast_node *node)
 {
 	int i;
+	int has_globals = 0;
+
+	/* register all globals first so functions can reference them */
+	for (i = 0; i < node->child_count; i++)
+		if (node->children[i]->type == NODE_GLOBAL)
+			global_vars[global_count++] =
+				strdup(node->children[i]->value);
+
+	for (i = 0; i < node->child_count; i++) {
+		if (node->children[i]->type == NODE_GLOBAL) {
+			if (!has_globals) {
+				emit("\t.data");
+				has_globals = 1;
+			}
+			gen_global(node->children[i]);
+		}
+	}
 
 	emit("\t.text");
 	for (i = 0; i < node->child_count; i++)
-		gen_function(node->children[i]);
+		if (node->children[i]->type == NODE_FUNCTION)
+			gen_function(node->children[i]);
 	emit("\t.section .note.GNU-stack,\"\",@progbits");
 }
 
