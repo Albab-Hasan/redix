@@ -49,8 +49,12 @@ const char *token_type_name(enum token_type type)
 	case TOKEN_BREAK:	return "TOKEN_BREAK";
 	case TOKEN_CONTINUE:	return "TOKEN_CONTINUE";
 	case TOKEN_COMMA:	return "TOKEN_COMMA";
-	case TOKEN_INC:		return "TOKEN_INC";
-	case TOKEN_DEC:		return "TOKEN_DEC";
+	case TOKEN_INC:			return "TOKEN_INC";
+	case TOKEN_DEC:			return "TOKEN_DEC";
+	case TOKEN_PLUS_ASSIGN:		return "TOKEN_PLUS_ASSIGN";
+	case TOKEN_MINUS_ASSIGN:	return "TOKEN_MINUS_ASSIGN";
+	case TOKEN_STAR_ASSIGN:		return "TOKEN_STAR_ASSIGN";
+	case TOKEN_SLASH_ASSIGN:	return "TOKEN_SLASH_ASSIGN";
 	}
 	return "UNKNOWN";
 }
@@ -184,6 +188,9 @@ struct token *lexer_tokenize(const char *source, int *count)
 			if (source[position + 1] == '+') {
 				tokens[ntokens++] = make_token(TOKEN_INC, "++");
 				position += 2;
+			} else if (source[position + 1] == '=') {
+				tokens[ntokens++] = make_token(TOKEN_PLUS_ASSIGN, "+=");
+				position += 2;
 			} else {
 				tokens[ntokens++] = make_token(TOKEN_PLUS, "+");
 				position++;
@@ -193,18 +200,31 @@ struct token *lexer_tokenize(const char *source, int *count)
 			if (source[position + 1] == '-') {
 				tokens[ntokens++] = make_token(TOKEN_DEC, "--");
 				position += 2;
+			} else if (source[position + 1] == '=') {
+				tokens[ntokens++] = make_token(TOKEN_MINUS_ASSIGN, "-=");
+				position += 2;
 			} else {
 				tokens[ntokens++] = make_token(TOKEN_MINUS, "-");
 				position++;
 			}
 			break;
 		case '*':
-			tokens[ntokens++] = make_token(TOKEN_STAR, "*");
-			position++;
+			if (source[position + 1] == '=') {
+				tokens[ntokens++] = make_token(TOKEN_STAR_ASSIGN, "*=");
+				position += 2;
+			} else {
+				tokens[ntokens++] = make_token(TOKEN_STAR, "*");
+				position++;
+			}
 			break;
 		case '/':
-			tokens[ntokens++] = make_token(TOKEN_SLASH, "/");
-			position++;
+			if (source[position + 1] == '=') {
+				tokens[ntokens++] = make_token(TOKEN_SLASH_ASSIGN, "/=");
+				position += 2;
+			} else {
+				tokens[ntokens++] = make_token(TOKEN_SLASH, "/");
+				position++;
+			}
 			break;
 		case '~':
 			tokens[ntokens++] = make_token(TOKEN_TILDE, "~");

@@ -11,7 +11,8 @@ code generation. Currently it supports:
 - increment/decrement: prefix `++x`, `--x` and postfix `x++`, `x--`
 - comparison operators: `<`, `>`, `<=`, `>=`, `==`, `!=`
 - logical operators: `&&`, `||`
-- local variable declarations, assignments, and references
+- local and global variable declarations, assignments, and references
+- compound assignment: `+=`, `-=`, `*=`, `/=`
 - `if`/`else` statements
 - `while` loops
 - `for` loops

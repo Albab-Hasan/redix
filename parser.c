@@ -208,10 +208,11 @@ static struct ast_node *parse_expression(void)
 {
 	struct ast_node *left;
 	struct ast_node *node;
+	struct ast_node *binary;
+	const char *op;
 
 	left = parse_logical_or();
 
-	/* if next is = then this was a variable on the left */
 	if (current()->type == TOKEN_ASSIGN) {
 		position++;
 		node = make_node(NODE_ASSIGN, left->value);
@@ -219,6 +220,25 @@ static struct ast_node *parse_expression(void)
 		add_child(node, parse_expression()); /* right associative */
 		return node;
 	}
+
+	/* desugar: x op= e  ->  x = x op e */
+	op = NULL;
+	if      (current()->type == TOKEN_PLUS_ASSIGN)  op = "+";
+	else if (current()->type == TOKEN_MINUS_ASSIGN) op = "-";
+	else if (current()->type == TOKEN_STAR_ASSIGN)  op = "*";
+	else if (current()->type == TOKEN_SLASH_ASSIGN) op = "/";
+
+	if (op) {
+		position++;
+		node = make_node(NODE_ASSIGN, left->value);
+		binary = make_node(NODE_BINARY, (char *)op);
+		add_child(binary, make_node(NODE_VAR, node->value));
+		free_ast(left);
+		add_child(binary, parse_expression()); /* right associative */
+		add_child(node, binary);
+		return node;
+	}
+
 	return left;
 }
 

@@ -38,6 +38,10 @@ enum token_type {
 	TOKEN_COMMA,
 	TOKEN_INC,
 	TOKEN_DEC,
+	TOKEN_PLUS_ASSIGN,
+	TOKEN_MINUS_ASSIGN,
+	TOKEN_STAR_ASSIGN,
+	TOKEN_SLASH_ASSIGN,
 };
 
 /* a tokens type and the actual text it came from */
