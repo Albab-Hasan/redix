@@ -152,6 +152,19 @@ struct token *lexer_tokenize(const char *source, int *count)
 			continue;
 		}
 
+		/* skip block comments */
+		if (source[position] == '/' && source[position + 1] == '*') {
+			position += 2;
+			while (source[position] != '\0') {
+				if (source[position] == '*' && source[position + 1] == '/') {
+					position += 2;
+					break;
+				}
+				position++;
+			}
+			continue;
+		}
+
 		/* grow the array if needed */
 		if (ntokens + 1 >= capacity) {
 			capacity *= 2;
