@@ -15,6 +15,7 @@ static char loop_cont_label[64];
 static struct {
 	char *name;
 	int offset; /* negative offset from rbp */
+	int is_ptr;
 } var_map[MAX_VARS];
 static int var_count;
 static int stack_offset;
@@ -47,12 +48,23 @@ static int find_var(const char *name)
 	return 0;
 }
 
-/* add a new variable to the stack map */
-static int declare_var(const char *name)
+static int var_is_ptr(const char *name)
 {
-	stack_offset -= 4;
+	int i;
+
+	for (i = var_count - 1; i >= 0; i--)
+		if (strcmp(var_map[i].name, name) == 0)
+			return var_map[i].is_ptr;
+	return 0;
+}
+
+/* add a new variable to the stack map -- all vars use 8-byte slots */
+static int declare_var(const char *name, int is_ptr)
+{
+	stack_offset -= 8;
 	var_map[var_count].name = strdup(name);
 	var_map[var_count].offset = stack_offset;
+	var_map[var_count].is_ptr = is_ptr;
 	var_count++;
 	return stack_offset;
 }
@@ -175,7 +187,10 @@ static void gen_var(struct ast_node *node)
 		emit("\tmovl %s(%%rip), %%eax", node->value);
 		return;
 	}
-	emit("\tmovl %d(%%rbp), %%eax", find_var(node->value));
+	if (var_is_ptr(node->value))
+		emit("\tmovq %d(%%rbp), %%rax", find_var(node->value));
+	else
+		emit("\tmovl %d(%%rbp), %%eax", find_var(node->value));
 }
 
 static void gen_assign(struct ast_node *node)
@@ -185,7 +200,45 @@ static void gen_assign(struct ast_node *node)
 		emit("\tmovl %%eax, %s(%%rip)", node->value);
 		return;
 	}
-	emit("\tmovl %%eax, %d(%%rbp)", find_var(node->value));
+	if (var_is_ptr(node->value))
+		emit("\tmovq %%rax, %d(%%rbp)", find_var(node->value));
+	else
+		emit("\tmovl %%eax, %d(%%rbp)", find_var(node->value));
+}
+
+static void gen_addr_of(struct ast_node *node)
+{
+	if (is_global(node->value)) {
+		emit("\tleaq %s(%%rip), %%rax", node->value);
+		return;
+	}
+	emit("\tleaq %d(%%rbp), %%rax", find_var(node->value));
+}
+
+static void gen_deref(struct ast_node *node)
+{
+	gen_expression(node->children[0]); /* ptr in rax */
+	emit("\tmovl (%%rax), %%eax");
+}
+
+static void gen_deref_assign(struct ast_node *node)
+{
+	/* child[0] = ptr expr, child[1] = value expr */
+	gen_expression(node->children[1]); /* value in eax */
+	emit("\tpush %%rax");
+	gen_expression(node->children[0]); /* ptr in rax */
+	emit("\tpop %%rcx");
+	emit("\tmovl %%ecx, (%%rax)");
+}
+
+static void gen_ptr_declaration(struct ast_node *node)
+{
+	int offset = declare_var(node->value, 1);
+
+	if (node->child_count > 0) {
+		gen_expression(node->children[0]);
+		emit("\tmovq %%rax, %d(%%rbp)", offset);
+	}
 }
 
 /* prefix: increment/decrement first, result is the new value */
@@ -266,6 +319,9 @@ static void gen_expression(struct ast_node *node)
 	case NODE_PREFIX_DEC:		gen_prefix_dec(node);		break;
 	case NODE_POSTFIX_INC:		gen_postfix_inc(node);		break;
 	case NODE_POSTFIX_DEC:		gen_postfix_dec(node);		break;
+	case NODE_ADDR_OF:		gen_addr_of(node);		break;
+	case NODE_DEREF:		gen_deref(node);		break;
+	case NODE_DEREF_ASSIGN:		gen_deref_assign(node);		break;
 	default:
 		fprintf(stderr, "codegen: bad expression node type %d\n",
 				node->type);
@@ -285,10 +341,9 @@ static void gen_return(struct ast_node *node)
 
 static void gen_declaration(struct ast_node *node)
 {
-	int offset = declare_var(node->value);
+	int offset = declare_var(node->value, 0);
 
 	if (node->child_count > 0) {
-		/* has initializer */
 		gen_expression(node->children[0]);
 		emit("\tmovl %%eax, %d(%%rbp)", offset);
 	}
@@ -391,15 +446,17 @@ static void gen_for(struct ast_node *node)
 static void gen_statement(struct ast_node *node)
 {
 	switch (node->type) {
-	case NODE_RETURN:	gen_return(node);	break;
-	case NODE_DECLARATION:	gen_declaration(node);	break;
-	case NODE_COMPOUND:	gen_compound(node);	break;
-	case NODE_IF:		gen_if(node);		break;
-	case NODE_WHILE:	gen_while(node);	break;
-	case NODE_FOR:		gen_for(node);		break;
+	case NODE_RETURN:		gen_return(node);	break;
+	case NODE_DECLARATION:		gen_declaration(node);	break;
+	case NODE_PTR_DECLARATION:	gen_ptr_declaration(node); break;
+	case NODE_COMPOUND:		gen_compound(node);	break;
+	case NODE_IF:			gen_if(node);		break;
+	case NODE_WHILE:		gen_while(node);	break;
+	case NODE_FOR:			gen_for(node);		break;
 	case NODE_BREAK:	emit("\tjmp %s", loop_break_label); break;
 	case NODE_CONTINUE:	emit("\tjmp %s", loop_cont_label);  break;
 	case NODE_ASSIGN:
+	case NODE_DEREF_ASSIGN:
 	case NODE_VAR:
 	case NODE_BINARY:
 	case NODE_UNARY:
@@ -409,6 +466,7 @@ static void gen_statement(struct ast_node *node)
 	case NODE_PREFIX_DEC:
 	case NODE_POSTFIX_INC:
 	case NODE_POSTFIX_DEC:
+	case NODE_DEREF:
 		/* expression statement */
 		gen_expression(node);
 		break;
@@ -425,7 +483,7 @@ static int count_declarations(struct ast_node *node)
 	int i;
 	int count = 0;
 
-	if (node->type == NODE_DECLARATION)
+	if (node->type == NODE_DECLARATION || node->type == NODE_PTR_DECLARATION)
 		return 1;
 	for (i = 0; i < node->child_count; i++)
 		count += count_declarations(node->children[i]);
@@ -437,11 +495,15 @@ static void gen_function(struct ast_node *node)
 	static const char *param_regs[] = {
 		"%edi", "%esi", "%edx", "%ecx", "%r8d", "%r9d"
 	};
+	static const char *ptr_param_regs[] = {
+		"%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"
+	};
 	int i;
 	int num_params;
 	int num_locals;
 	int alloc_size;
 	int offset;
+	int is_ptr_param;
 	struct ast_node *body;
 
 	/* reset variable state per function */
@@ -459,9 +521,9 @@ static void gen_function(struct ast_node *node)
 	emit("\tpushq %%rbp");
 	emit("\tmovq %%rsp, %%rbp");
 
-	/* reserve stack for both params and locals aligned to 16 */
+	/* reserve stack for both params and locals aligned to 16 -- all 8-byte slots */
 	num_locals = count_declarations(body);
-	alloc_size = (num_params + num_locals) * 4;
+	alloc_size = (num_params + num_locals) * 8;
 	if (alloc_size > 0) {
 		if (alloc_size % 16 != 0)
 			alloc_size += 16 - (alloc_size % 16);
@@ -470,8 +532,12 @@ static void gen_function(struct ast_node *node)
 
 	/* copy params from argument registers onto the stack */
 	for (i = 0; i < num_params && i < 6; i++) {
-		offset = declare_var(node->children[i]->value);
-		emit("\tmovl %s, %d(%%rbp)", param_regs[i], offset);
+		is_ptr_param = node->children[i]->type == NODE_PTR_DECLARATION;
+		offset = declare_var(node->children[i]->value, is_ptr_param);
+		if (is_ptr_param)
+			emit("\tmovq %s, %d(%%rbp)", ptr_param_regs[i], offset);
+		else
+			emit("\tmovl %s, %d(%%rbp)", param_regs[i], offset);
 	}
 
 	gen_statement(body);

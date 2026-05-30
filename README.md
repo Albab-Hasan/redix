@@ -19,6 +19,7 @@ code generation. Currently it supports:
 - `break` and `continue`
 - multiple functions with up to 6 parameters and calls
 - `void` return type and bare `return;`
+- pointers: `int *p`, address-of `&x`, dereference `*p`, pointer parameters
 - `//` line comments
 
 ## Building

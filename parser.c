@@ -96,7 +96,7 @@ static struct ast_node *parse_primary(void)
 	return NULL;
 }
 
-/* unary operators - ~ ! */
+/* unary operators - ~ ! & * */
 static struct ast_node *parse_unary(void)
 {
 	struct token *tok;
@@ -113,10 +113,20 @@ static struct ast_node *parse_unary(void)
 	if (current()->type == TOKEN_INC || current()->type == TOKEN_DEC) {
 		enum token_type op = current()->type;
 		position++;
-		/* operand must be a plain variable */
 		tok = expect(TOKEN_IDENTIFIER);
 		return make_node(op == TOKEN_INC ? NODE_PREFIX_INC : NODE_PREFIX_DEC,
 				tok->value);
+	}
+	if (current()->type == TOKEN_AMPERSAND) {
+		position++;
+		tok = expect(TOKEN_IDENTIFIER);
+		return make_node(NODE_ADDR_OF, tok->value);
+	}
+	if (current()->type == TOKEN_STAR) {
+		position++;
+		node = make_node(NODE_DEREF, NULL);
+		add_child(node, parse_unary());
+		return node;
 	}
 	return parse_primary();
 }
@@ -209,12 +219,24 @@ static struct ast_node *parse_expression(void)
 	struct ast_node *left;
 	struct ast_node *node;
 	struct ast_node *binary;
+	struct ast_node *ptr_expr;
 	const char *op;
 
 	left = parse_logical_or();
 
 	if (current()->type == TOKEN_ASSIGN) {
 		position++;
+		if (left->type == NODE_DEREF) {
+			/* *p = expr: extract ptr child before freeing the deref shell */
+			ptr_expr = left->children[0];
+			free(left->children);
+			free(left->value);
+			free(left);
+			node = make_node(NODE_DEREF_ASSIGN, NULL);
+			add_child(node, ptr_expr);
+			add_child(node, parse_expression());
+			return node;
+		}
 		node = make_node(NODE_ASSIGN, left->value);
 		free_ast(left);
 		add_child(node, parse_expression()); /* right associative */
@@ -268,15 +290,22 @@ static struct ast_node *parse_return(void)
 	return node;
 }
 
-/* parse int name [= expr] without consuming the trailing ; */
+/* parse int [*] name [= expr] without consuming the trailing ; */
 static struct ast_node *parse_declaration_inner(void)
 {
 	struct token *name;
 	struct ast_node *node;
+	int is_ptr;
 
 	position++; /* consume int */
+	is_ptr = 0;
+	if (current()->type == TOKEN_STAR) {
+		is_ptr = 1;
+		position++;
+	}
 	name = expect(TOKEN_IDENTIFIER);
-	node = make_node(NODE_DECLARATION, name->value);
+	node = make_node(is_ptr ? NODE_PTR_DECLARATION : NODE_DECLARATION,
+			name->value);
 	if (current()->type == TOKEN_ASSIGN) {
 		position++;
 		add_child(node, parse_expression());
@@ -373,12 +402,13 @@ static struct ast_node *parse_statement(void)
 	}
 }
 
-/* parse a function -- params stored as NODE_DECLARATION children before body */
+/* parse a function -- params stored as NODE_DECLARATION/NODE_PTR_DECLARATION before body */
 static struct ast_node *parse_function(void)
 {
 	struct token *name;
 	struct token *pname;
 	struct ast_node *node;
+	int is_ptr_param;
 
 	/* return type int or void for now we just consume it */
 	if (current()->type == TOKEN_INT || current()->type == TOKEN_VOID)
@@ -390,8 +420,15 @@ static struct ast_node *parse_function(void)
 	expect(TOKEN_LPAREN);
 	while (current()->type != TOKEN_RPAREN) {
 		expect(TOKEN_INT);
+		is_ptr_param = 0;
+		if (current()->type == TOKEN_STAR) {
+			is_ptr_param = 1;
+			position++;
+		}
 		pname = expect(TOKEN_IDENTIFIER);
-		add_child(node, make_node(NODE_DECLARATION, pname->value));
+		add_child(node, make_node(
+				is_ptr_param ? NODE_PTR_DECLARATION : NODE_DECLARATION,
+				pname->value));
 		if (current()->type == TOKEN_COMMA)
 			position++;
 	}

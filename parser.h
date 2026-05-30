@@ -26,6 +26,10 @@ enum node_type {
 	NODE_PREFIX_DEC,
 	NODE_POSTFIX_INC,
 	NODE_POSTFIX_DEC,
+	NODE_ADDR_OF,
+	NODE_DEREF,
+	NODE_DEREF_ASSIGN,
+	NODE_PTR_DECLARATION,
 };
 
 /* a node in the abstrct syntax tree that can have child nodes */

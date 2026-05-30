@@ -55,6 +55,7 @@ const char *token_type_name(enum token_type type)
 	case TOKEN_MINUS_ASSIGN:	return "TOKEN_MINUS_ASSIGN";
 	case TOKEN_STAR_ASSIGN:		return "TOKEN_STAR_ASSIGN";
 	case TOKEN_SLASH_ASSIGN:	return "TOKEN_SLASH_ASSIGN";
+	case TOKEN_AMPERSAND:		return "TOKEN_AMPERSAND";
 	}
 	return "UNKNOWN";
 }
@@ -271,8 +272,8 @@ struct token *lexer_tokenize(const char *source, int *count)
 				tokens[ntokens++] = make_token(TOKEN_AND, "&&");
 				position += 2;
 			} else {
-				fprintf(stderr, "redix: unexpected character '&'\n");
-				exit(1);
+				tokens[ntokens++] = make_token(TOKEN_AMPERSAND, "&");
+				position++;
 			}
 			break;
 		case '|':

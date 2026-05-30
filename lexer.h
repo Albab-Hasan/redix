@@ -42,6 +42,7 @@ enum token_type {
 	TOKEN_MINUS_ASSIGN,
 	TOKEN_STAR_ASSIGN,
 	TOKEN_SLASH_ASSIGN,
+	TOKEN_AMPERSAND,
 };
 
 /* a tokens type and the actual text it came from */
