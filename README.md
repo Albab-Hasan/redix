@@ -11,6 +11,7 @@ code generation. Currently it supports:
 - increment/decrement: prefix `++x`, `--x` and postfix `x++`, `x--`
 - comparison operators: `<`, `>`, `<=`, `>=`, `==`, `!=`
 - logical operators: `&&`, `||`
+- ternary conditional: `cond ? a : b`
 - local and global variable declarations, assignments, and references
 - compound assignment: `+=`, `-=`, `*=`, `/=`
 - `if`/`else` statements
@@ -20,6 +21,7 @@ code generation. Currently it supports:
 - multiple functions with up to 6 parameters and calls
 - `void` return type and bare `return;`
 - pointers: `int *p`, address-of `&x`, dereference `*p`, pointer parameters
+- pointer arithmetic: `p + n`, `p - n`, `p++`, `p--`, pointer difference, and `p[i]` indexing
 - `//` line comments and `/* */` block comments
 
 ## Building

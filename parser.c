@@ -53,6 +53,7 @@ static struct ast_node *parse_primary(void)
 {
 	struct token *tok;
 	struct ast_node *node;
+	struct ast_node *binary;
 
 	if (current()->type == TOKEN_NUMBER) {
 		tok = &tokens[position++];
@@ -79,6 +80,17 @@ static struct ast_node *parse_primary(void)
 		if (current()->type == TOKEN_DEC) {
 			position++;
 			return make_node(NODE_POSTFIX_DEC, tok->value);
+		}
+		if (current()->type == TOKEN_LBRACKET) {
+			/* p[i] is sugar for *(p + i) */
+			position++;
+			binary = make_node(NODE_BINARY, "+");
+			add_child(binary, make_node(NODE_VAR, tok->value));
+			add_child(binary, parse_expression());
+			expect(TOKEN_RBRACKET);
+			node = make_node(NODE_DEREF, NULL);
+			add_child(node, binary);
+			return node;
 		}
 		return make_node(NODE_VAR, tok->value);
 	}
@@ -213,6 +225,27 @@ static struct ast_node *parse_logical_or(void)
 	return parse_binop(parse_logical_and, is_or);
 }
 
+/* cond ? a : b false branch is right associative */
+static struct ast_node *parse_ternary(void)
+{
+	struct ast_node *cond;
+	struct ast_node *node;
+
+	cond = parse_logical_or();
+
+	if (current()->type == TOKEN_QUESTION) {
+		position++;
+		node = make_node(NODE_TERNARY, NULL);
+		add_child(node, cond);
+		add_child(node, parse_expression()); /* true branch */
+		expect(TOKEN_COLON);
+		add_child(node, parse_ternary()); /* false branch */
+		return node;
+	}
+
+	return cond;
+}
+
 /* assignment or regular expression */
 static struct ast_node *parse_expression(void)
 {
@@ -222,7 +255,7 @@ static struct ast_node *parse_expression(void)
 	struct ast_node *ptr_expr;
 	const char *op;
 
-	left = parse_logical_or();
+	left = parse_ternary();
 
 	if (current()->type == TOKEN_ASSIGN) {
 		position++;

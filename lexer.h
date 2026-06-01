@@ -43,6 +43,10 @@ enum token_type {
 	TOKEN_STAR_ASSIGN,
 	TOKEN_SLASH_ASSIGN,
 	TOKEN_AMPERSAND,
+	TOKEN_QUESTION,
+	TOKEN_COLON,
+	TOKEN_LBRACKET,
+	TOKEN_RBRACKET,
 };
 
 /* a tokens type and the actual text it came from */

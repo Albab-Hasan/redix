@@ -24,6 +24,9 @@ static int stack_offset;
 static char *global_vars[MAX_GLOBALS];
 static int global_count;
 
+/* element size for pointer arithmetic only int pointers exist for now */
+#define PTR_SCALE 4
+
 static int is_global(const char *name)
 {
 	int i;
@@ -164,16 +167,76 @@ static int is_compare_op(const char *op)
 	return c == '<' || c == '>' || c == '=' || c == '!';
 }
 
+/* does this expression evaluate to a pointer
+ * needed so binary + and - can scale by the element size */
+static int expr_is_ptr(struct ast_node *node)
+{
+	int l;
+	int r;
+
+	switch (node->type) {
+	case NODE_VAR:
+		return var_is_ptr(node->value);
+	case NODE_ADDR_OF:
+		return 1;
+	case NODE_BINARY:
+		if (node->value[1] != '\0')
+			return 0;
+		if (node->value[0] != '+' && node->value[0] != '-')
+			return 0;
+		l = expr_is_ptr(node->children[0]);
+		r = expr_is_ptr(node->children[1]);
+		if (node->value[0] == '-' && l && r)
+			return 0; /* ptr - ptr is an element count not a pointer */
+		return l || r;
+	default:
+		return 0;
+	}
+}
+
+/* pointer arithmetic rcx is left rax is right
+ * scale the integer side by the element size before combining */
+static void gen_ptr_arith(const char *op, int lptr, int rptr)
+{
+	if (op[0] == '+') {
+		if (lptr && !rptr) {
+			emit("\tmovslq %%eax, %%rax"); /* sign extend the int index */
+			emit("\timulq $%d, %%rax", PTR_SCALE);
+		} else if (!lptr && rptr) {
+			emit("\tmovslq %%ecx, %%rcx");
+			emit("\timulq $%d, %%rcx", PTR_SCALE);
+		}
+		emit("\taddq %%rcx, %%rax");
+	} else if (lptr && rptr) {
+		/* ptr - ptr gives the number of elements between them */
+		emit("\tsubq %%rax, %%rcx");
+		emit("\tmovq %%rcx, %%rax");
+		emit("\tcqto");
+		emit("\tmovq $%d, %%rbx", PTR_SCALE);
+		emit("\tidivq %%rbx");
+	} else {
+		/* ptr - int */
+		emit("\tmovslq %%eax, %%rax");
+		emit("\timulq $%d, %%rax", PTR_SCALE);
+		emit("\tsubq %%rax, %%rcx");
+		emit("\tmovq %%rcx, %%rax");
+	}
+}
+
 static void gen_binary(struct ast_node *node)
 {
 	const char *op = node->value;
+	int lptr = expr_is_ptr(node->children[0]);
+	int rptr = expr_is_ptr(node->children[1]);
 
 	gen_expression(node->children[0]);
 	emit("\tpush %%rax");
 	gen_expression(node->children[1]);
 	emit("\tpop %%rcx");
 
-	if (is_arith_op(op))
+	if (is_arith_op(op) && (lptr || rptr))
+		gen_ptr_arith(op, lptr, rptr);
+	else if (is_arith_op(op))
 		gen_arith(op);
 	else if (is_compare_op(op))
 		gen_compare(op);
@@ -241,50 +304,83 @@ static void gen_ptr_declaration(struct ast_node *node)
 	}
 }
 
-/* prefix: increment/decrement first, result is the new value */
+/* prefix: increment/decrement first, result is the new value
+ * pointers step by the element size and live in 8-byte slots */
 static void gen_prefix_inc(struct ast_node *node)
 {
+	int off;
+
 	if (is_global(node->value)) {
 		emit("\taddl $1, %s(%%rip)", node->value);
 		emit("\tmovl %s(%%rip), %%eax", node->value);
 		return;
 	}
-	emit("\taddl $1, %d(%%rbp)", find_var(node->value));
-	emit("\tmovl %d(%%rbp), %%eax", find_var(node->value));
+	off = find_var(node->value);
+	if (var_is_ptr(node->value)) {
+		emit("\taddq $%d, %d(%%rbp)", PTR_SCALE, off);
+		emit("\tmovq %d(%%rbp), %%rax", off);
+	} else {
+		emit("\taddl $1, %d(%%rbp)", off);
+		emit("\tmovl %d(%%rbp), %%eax", off);
+	}
 }
 
 static void gen_prefix_dec(struct ast_node *node)
 {
+	int off;
+
 	if (is_global(node->value)) {
 		emit("\tsubl $1, %s(%%rip)", node->value);
 		emit("\tmovl %s(%%rip), %%eax", node->value);
 		return;
 	}
-	emit("\tsubl $1, %d(%%rbp)", find_var(node->value));
-	emit("\tmovl %d(%%rbp), %%eax", find_var(node->value));
+	off = find_var(node->value);
+	if (var_is_ptr(node->value)) {
+		emit("\tsubq $%d, %d(%%rbp)", PTR_SCALE, off);
+		emit("\tmovq %d(%%rbp), %%rax", off);
+	} else {
+		emit("\tsubl $1, %d(%%rbp)", off);
+		emit("\tmovl %d(%%rbp), %%eax", off);
+	}
 }
 
-/* postfix: load old value into eax first, then mutate memory */
+/* postfix: load old value first, then mutate memory */
 static void gen_postfix_inc(struct ast_node *node)
 {
+	int off;
+
 	if (is_global(node->value)) {
 		emit("\tmovl %s(%%rip), %%eax", node->value);
 		emit("\taddl $1, %s(%%rip)", node->value);
 		return;
 	}
-	emit("\tmovl %d(%%rbp), %%eax", find_var(node->value));
-	emit("\taddl $1, %d(%%rbp)", find_var(node->value));
+	off = find_var(node->value);
+	if (var_is_ptr(node->value)) {
+		emit("\tmovq %d(%%rbp), %%rax", off);
+		emit("\taddq $%d, %d(%%rbp)", PTR_SCALE, off);
+	} else {
+		emit("\tmovl %d(%%rbp), %%eax", off);
+		emit("\taddl $1, %d(%%rbp)", off);
+	}
 }
 
 static void gen_postfix_dec(struct ast_node *node)
 {
+	int off;
+
 	if (is_global(node->value)) {
 		emit("\tmovl %s(%%rip), %%eax", node->value);
 		emit("\tsubl $1, %s(%%rip)", node->value);
 		return;
 	}
-	emit("\tmovl %d(%%rbp), %%eax", find_var(node->value));
-	emit("\tsubl $1, %d(%%rbp)", find_var(node->value));
+	off = find_var(node->value);
+	if (var_is_ptr(node->value)) {
+		emit("\tmovq %d(%%rbp), %%rax", off);
+		emit("\tsubq $%d, %d(%%rbp)", PTR_SCALE, off);
+	} else {
+		emit("\tmovl %d(%%rbp), %%eax", off);
+		emit("\tsubl $1, %d(%%rbp)", off);
+	}
 }
 
 static void gen_call(struct ast_node *node)
@@ -306,6 +402,21 @@ static void gen_call(struct ast_node *node)
 	emit("\tcall %s", node->value);
 }
 
+/* cond ? a : b like if/else but the chosen branch lands in eax */
+static void gen_ternary(struct ast_node *node)
+{
+	int lbl = label_count++;
+
+	gen_expression(node->children[0]);
+	emit("\tcmpl $0, %%eax");
+	emit("\tje .Lternfalse%d", lbl);
+	gen_expression(node->children[1]); /* true branch */
+	emit("\tjmp .Lternend%d", lbl);
+	emit(".Lternfalse%d:", lbl);
+	gen_expression(node->children[2]); /* false branch */
+	emit(".Lternend%d:", lbl);
+}
+
 static void gen_expression(struct ast_node *node)
 {
 	switch (node->type) {
@@ -322,6 +433,7 @@ static void gen_expression(struct ast_node *node)
 	case NODE_ADDR_OF:		gen_addr_of(node);		break;
 	case NODE_DEREF:		gen_deref(node);		break;
 	case NODE_DEREF_ASSIGN:		gen_deref_assign(node);		break;
+	case NODE_TERNARY:		gen_ternary(node);		break;
 	default:
 		fprintf(stderr, "codegen: bad expression node type %d\n",
 				node->type);
@@ -467,6 +579,7 @@ static void gen_statement(struct ast_node *node)
 	case NODE_POSTFIX_INC:
 	case NODE_POSTFIX_DEC:
 	case NODE_DEREF:
+	case NODE_TERNARY:
 		/* expression statement */
 		gen_expression(node);
 		break;

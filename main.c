@@ -34,6 +34,7 @@ void print_ast(struct ast_node *node, int depth)
 	case NODE_PREFIX_DEC:	printf("PrefixDec: %s\n", node->value); break;
 	case NODE_POSTFIX_INC:	printf("PostfixInc: %s\n", node->value); break;
 	case NODE_POSTFIX_DEC:	printf("PostfixDec: %s\n", node->value); break;
+	case NODE_TERNARY:	printf("Ternary\n"); break;
 	}
 
 	for (i = 0; i < node->child_count; i++)

@@ -56,6 +56,10 @@ const char *token_type_name(enum token_type type)
 	case TOKEN_STAR_ASSIGN:		return "TOKEN_STAR_ASSIGN";
 	case TOKEN_SLASH_ASSIGN:	return "TOKEN_SLASH_ASSIGN";
 	case TOKEN_AMPERSAND:		return "TOKEN_AMPERSAND";
+	case TOKEN_QUESTION:		return "TOKEN_QUESTION";
+	case TOKEN_COLON:		return "TOKEN_COLON";
+	case TOKEN_LBRACKET:		return "TOKEN_LBRACKET";
+	case TOKEN_RBRACKET:		return "TOKEN_RBRACKET";
 	}
 	return "UNKNOWN";
 }
@@ -196,6 +200,22 @@ struct token *lexer_tokenize(const char *source, int *count)
 			break;
 		case ',':
 			tokens[ntokens++] = make_token(TOKEN_COMMA, ",");
+			position++;
+			break;
+		case '?':
+			tokens[ntokens++] = make_token(TOKEN_QUESTION, "?");
+			position++;
+			break;
+		case ':':
+			tokens[ntokens++] = make_token(TOKEN_COLON, ":");
+			position++;
+			break;
+		case '[':
+			tokens[ntokens++] = make_token(TOKEN_LBRACKET, "[");
+			position++;
+			break;
+		case ']':
+			tokens[ntokens++] = make_token(TOKEN_RBRACKET, "]");
 			position++;
 			break;
 		case '+':
