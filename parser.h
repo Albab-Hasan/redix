@@ -31,6 +31,7 @@ enum node_type {
 	NODE_DEREF_ASSIGN,
 	NODE_PTR_DECLARATION,
 	NODE_TERNARY,
+	NODE_ARRAY_DECL,
 };
 
 /* a node in the abstrct syntax tree that can have child nodes */

@@ -323,10 +323,11 @@ static struct ast_node *parse_return(void)
 	return node;
 }
 
-/* parse int [*] name [= expr] without consuming the trailing ; */
+/* parse int [*] name [= expr] or int name[N] without consuming the trailing ; */
 static struct ast_node *parse_declaration_inner(void)
 {
 	struct token *name;
+	struct token *size_tok;
 	struct ast_node *node;
 	int is_ptr;
 
@@ -337,6 +338,14 @@ static struct ast_node *parse_declaration_inner(void)
 		position++;
 	}
 	name = expect(TOKEN_IDENTIFIER);
+	if (!is_ptr && current()->type == TOKEN_LBRACKET) {
+		position++;
+		size_tok = expect(TOKEN_NUMBER);
+		expect(TOKEN_RBRACKET);
+		node = make_node(NODE_ARRAY_DECL, name->value);
+		add_child(node, make_node(NODE_NUMBER, size_tok->value));
+		return node;
+	}
 	node = make_node(is_ptr ? NODE_PTR_DECLARATION : NODE_DECLARATION,
 			name->value);
 	if (current()->type == TOKEN_ASSIGN) {

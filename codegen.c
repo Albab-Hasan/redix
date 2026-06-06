@@ -16,6 +16,7 @@ static struct {
 	char *name;
 	int offset; /* negative offset from rbp */
 	int is_ptr;
+	int is_array;
 } var_map[MAX_VARS];
 static int var_count;
 static int stack_offset;
@@ -61,6 +62,16 @@ static int var_is_ptr(const char *name)
 	return 0;
 }
 
+static int var_is_array(const char *name)
+{
+	int i;
+
+	for (i = var_count - 1; i >= 0; i--)
+		if (strcmp(var_map[i].name, name) == 0)
+			return var_map[i].is_array;
+	return 0;
+}
+
 /* add a new variable to the stack map -- all vars use 8-byte slots */
 static int declare_var(const char *name, int is_ptr)
 {
@@ -68,6 +79,23 @@ static int declare_var(const char *name, int is_ptr)
 	var_map[var_count].name = strdup(name);
 	var_map[var_count].offset = stack_offset;
 	var_map[var_count].is_ptr = is_ptr;
+	var_map[var_count].is_array = 0;
+	var_count++;
+	return stack_offset;
+}
+
+/* allocate N*4 bytes contiguous on the stack, padded to 8-byte boundary */
+static int declare_array(const char *name, int size)
+{
+	int bytes = size * 4;
+
+	if (bytes % 8 != 0)
+		bytes += 4;
+	stack_offset -= bytes;
+	var_map[var_count].name = strdup(name);
+	var_map[var_count].offset = stack_offset;
+	var_map[var_count].is_ptr = 1;
+	var_map[var_count].is_array = 1;
 	var_count++;
 	return stack_offset;
 }
@@ -250,7 +278,9 @@ static void gen_var(struct ast_node *node)
 		emit("\tmovl %s(%%rip), %%eax", node->value);
 		return;
 	}
-	if (var_is_ptr(node->value))
+	if (var_is_array(node->value))
+		emit("\tleaq %d(%%rbp), %%rax", find_var(node->value));
+	else if (var_is_ptr(node->value))
 		emit("\tmovq %d(%%rbp), %%rax", find_var(node->value));
 	else
 		emit("\tmovl %d(%%rbp), %%eax", find_var(node->value));
@@ -461,6 +491,11 @@ static void gen_declaration(struct ast_node *node)
 	}
 }
 
+static void gen_array_decl(struct ast_node *node)
+{
+	declare_array(node->value, atoi(node->children[0]->value));
+}
+
 static void gen_compound(struct ast_node *node)
 {
 	int i;
@@ -561,6 +596,7 @@ static void gen_statement(struct ast_node *node)
 	case NODE_RETURN:		gen_return(node);	break;
 	case NODE_DECLARATION:		gen_declaration(node);	break;
 	case NODE_PTR_DECLARATION:	gen_ptr_declaration(node); break;
+	case NODE_ARRAY_DECL:		gen_array_decl(node);	break;
 	case NODE_COMPOUND:		gen_compound(node);	break;
 	case NODE_IF:			gen_if(node);		break;
 	case NODE_WHILE:		gen_while(node);	break;
@@ -590,17 +626,26 @@ static void gen_statement(struct ast_node *node)
 	}
 }
 
-/* count declarations so the right amount of stack gets reserved */
-static int count_declarations(struct ast_node *node)
+/* count bytes needed for locals so the right amount of stack gets reserved */
+static int count_stack_bytes(struct ast_node *node)
 {
 	int i;
-	int count = 0;
+	int total = 0;
+	int n;
+	int bytes;
 
 	if (node->type == NODE_DECLARATION || node->type == NODE_PTR_DECLARATION)
-		return 1;
+		return 8;
+	if (node->type == NODE_ARRAY_DECL) {
+		n = atoi(node->children[0]->value);
+		bytes = n * 4;
+		if (bytes % 8 != 0)
+			bytes += 4;
+		return bytes;
+	}
 	for (i = 0; i < node->child_count; i++)
-		count += count_declarations(node->children[i]);
-	return count;
+		total += count_stack_bytes(node->children[i]);
+	return total;
 }
 
 static void gen_function(struct ast_node *node)
@@ -634,9 +679,9 @@ static void gen_function(struct ast_node *node)
 	emit("\tpushq %%rbp");
 	emit("\tmovq %%rsp, %%rbp");
 
-	/* reserve stack for both params and locals aligned to 16 -- all 8-byte slots */
-	num_locals = count_declarations(body);
-	alloc_size = (num_params + num_locals) * 8;
+	/* reserve stack for params and locals aligned to 16 */
+	num_locals = count_stack_bytes(body);
+	alloc_size = num_params * 8 + num_locals;
 	if (alloc_size > 0) {
 		if (alloc_size % 16 != 0)
 			alloc_size += 16 - (alloc_size % 16);
