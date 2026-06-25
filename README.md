@@ -22,6 +22,8 @@ code generation. Currently it supports:
 - `void` return type and bare `return;`
 - pointers: `int *p`, address-of `&x`, dereference `*p`, pointer parameters
 - pointer arithmetic: `p + n`, `p - n`, `p++`, `p--`, pointer difference, and `p[i]` indexing
+- arrays: `int a[N]`, element access `a[i]`, decay to pointer when passed to functions
+- `char` type: declarations, assignments, arithmetic, arrays `char a[N]`, pointer `char *p`, function parameters
 - `//` line comments and `/* */` block comments
 
 ## Building

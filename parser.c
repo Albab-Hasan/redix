@@ -323,15 +323,17 @@ static struct ast_node *parse_return(void)
 	return node;
 }
 
-/* parse int [*] name [= expr] or int name[N] without consuming the trailing ; */
+/* parse TYPE [*] name [= expr] or TYPE name[N] without consuming the trailing ; */
 static struct ast_node *parse_declaration_inner(void)
 {
 	struct token *name;
 	struct token *size_tok;
 	struct ast_node *node;
 	int is_ptr;
+	int is_char;
 
-	position++; /* consume int */
+	is_char = (current()->type == TOKEN_CHAR);
+	position++; /* consume int or char */
 	is_ptr = 0;
 	if (current()->type == TOKEN_STAR) {
 		is_ptr = 1;
@@ -342,12 +344,17 @@ static struct ast_node *parse_declaration_inner(void)
 		position++;
 		size_tok = expect(TOKEN_NUMBER);
 		expect(TOKEN_RBRACKET);
-		node = make_node(NODE_ARRAY_DECL, name->value);
+		node = make_node(is_char ? NODE_CHAR_ARRAY_DECL : NODE_ARRAY_DECL,
+				name->value);
 		add_child(node, make_node(NODE_NUMBER, size_tok->value));
 		return node;
 	}
-	node = make_node(is_ptr ? NODE_PTR_DECLARATION : NODE_DECLARATION,
-			name->value);
+	if (is_ptr)
+		node = make_node(is_char ? NODE_CHAR_PTR_DECLARATION : NODE_PTR_DECLARATION,
+				name->value);
+	else
+		node = make_node(is_char ? NODE_CHAR_DECLARATION : NODE_DECLARATION,
+				name->value);
 	if (current()->type == TOKEN_ASSIGN) {
 		position++;
 		add_child(node, parse_expression());
@@ -399,7 +406,7 @@ static struct ast_node *parse_for(void)
 	position++;
 	node = make_node(NODE_FOR, NULL);
 	expect(TOKEN_LPAREN);
-	if (current()->type == TOKEN_INT)
+	if (current()->type == TOKEN_INT || current()->type == TOKEN_CHAR)
 		add_child(node, parse_declaration_inner());
 	else
 		add_child(node, parse_expression());
@@ -430,7 +437,8 @@ static struct ast_node *parse_statement(void)
 	switch (current()->type) {
 	case TOKEN_LBRACE:	return parse_block();
 	case TOKEN_RETURN:	return parse_return();
-	case TOKEN_INT:		return parse_declaration();
+	case TOKEN_INT:
+	case TOKEN_CHAR:	return parse_declaration();
 	case TOKEN_IF:		return parse_if();
 	case TOKEN_WHILE:	return parse_while();
 	case TOKEN_FOR:		return parse_for();
@@ -451,9 +459,11 @@ static struct ast_node *parse_function(void)
 	struct token *pname;
 	struct ast_node *node;
 	int is_ptr_param;
+	int is_char_param;
 
-	/* return type int or void for now we just consume it */
-	if (current()->type == TOKEN_INT || current()->type == TOKEN_VOID)
+	/* return type int void or char for now we just consume it */
+	if (current()->type == TOKEN_INT || current()->type == TOKEN_VOID
+			|| current()->type == TOKEN_CHAR)
 		position++;
 	else
 		expect(TOKEN_INT);
@@ -461,16 +471,22 @@ static struct ast_node *parse_function(void)
 	node = make_node(NODE_FUNCTION, name->value);
 	expect(TOKEN_LPAREN);
 	while (current()->type != TOKEN_RPAREN) {
-		expect(TOKEN_INT);
+		is_char_param = (current()->type == TOKEN_CHAR);
+		position++; /* consume int or char */
 		is_ptr_param = 0;
 		if (current()->type == TOKEN_STAR) {
 			is_ptr_param = 1;
 			position++;
 		}
 		pname = expect(TOKEN_IDENTIFIER);
-		add_child(node, make_node(
-				is_ptr_param ? NODE_PTR_DECLARATION : NODE_DECLARATION,
-				pname->value));
+		if (is_ptr_param)
+			add_child(node, make_node(
+					is_char_param ? NODE_CHAR_PTR_DECLARATION : NODE_PTR_DECLARATION,
+					pname->value));
+		else
+			add_child(node, make_node(
+					is_char_param ? NODE_CHAR_DECLARATION : NODE_DECLARATION,
+					pname->value));
 		if (current()->type == TOKEN_COMMA)
 			position++;
 	}
@@ -479,13 +495,13 @@ static struct ast_node *parse_function(void)
 	return node;
 }
 
-/* global variable declaration: int name [= number]; */
+/* global variable declaration: int/char name [= number]; */
 static struct ast_node *parse_global(void)
 {
 	struct token *name;
 	struct ast_node *node;
 
-	position++; /* consume int */
+	position++; /* consume int or char */
 	name = expect(TOKEN_IDENTIFIER);
 	node = make_node(NODE_GLOBAL, name->value);
 	if (current()->type == TOKEN_ASSIGN) {
@@ -511,7 +527,7 @@ struct ast_node *parse(struct token *toks, int count)
 
 	program = make_node(NODE_PROGRAM, NULL);
 	while (current()->type != TOKEN_EOF) {
-		/* peek: int/void NAME ( -> function, otherwise -> global */
+		/* peek: int/void/char NAME ( -> function, otherwise -> global */
 		if (position + 2 < token_count
 				&& tokens[position + 2].type == TOKEN_LPAREN)
 			add_child(program, parse_function());

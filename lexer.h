@@ -47,6 +47,7 @@ enum token_type {
 	TOKEN_COLON,
 	TOKEN_LBRACKET,
 	TOKEN_RBRACKET,
+	TOKEN_CHAR,
 };
 
 /* a tokens type and the actual text it came from */

@@ -60,6 +60,7 @@ const char *token_type_name(enum token_type type)
 	case TOKEN_COLON:		return "TOKEN_COLON";
 	case TOKEN_LBRACKET:		return "TOKEN_LBRACKET";
 	case TOKEN_RBRACKET:		return "TOKEN_RBRACKET";
+	case TOKEN_CHAR:		return "TOKEN_CHAR";
 	}
 	return "UNKNOWN";
 }
@@ -78,6 +79,7 @@ static const struct {
 	{ "for",      TOKEN_FOR },
 	{ "break",    TOKEN_BREAK },
 	{ "continue", TOKEN_CONTINUE },
+	{ "char",     TOKEN_CHAR },
 };
 
 #define NKEYWORDS (sizeof(keywords) / sizeof(keywords[0]))
