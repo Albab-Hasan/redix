@@ -35,6 +35,7 @@ enum node_type {
 	NODE_CHAR_DECLARATION,
 	NODE_CHAR_PTR_DECLARATION,
 	NODE_CHAR_ARRAY_DECL,
+	NODE_STRING,
 };
 
 /* a node in the abstrct syntax tree that can have child nodes */

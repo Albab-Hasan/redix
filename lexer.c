@@ -61,6 +61,7 @@ const char *token_type_name(enum token_type type)
 	case TOKEN_LBRACKET:		return "TOKEN_LBRACKET";
 	case TOKEN_RBRACKET:		return "TOKEN_RBRACKET";
 	case TOKEN_CHAR:		return "TOKEN_CHAR";
+	case TOKEN_STRING_LITERAL:	return "TOKEN_STRING_LITERAL";
 	}
 	return "UNKNOWN";
 }
@@ -133,6 +134,24 @@ static void scan_identifier(const char *source, int *pos,
 
 	type = lookup_keyword(word);
 	tokens[(*ntokens)++] = (struct token){ type, word };
+}
+
+static void scan_string(const char *source, int *pos,
+		struct token *tokens, int *ntokens)
+{
+	char buf[4096];
+	int len = 0;
+
+	(*pos)++;
+	while (source[*pos] != '"' && source[*pos] != '\0') {
+		if (source[*pos] == '\\')
+			buf[len++] = source[(*pos)++];
+		buf[len++] = source[(*pos)++];
+	}
+	buf[len] = '\0';
+	if (source[*pos] == '"')
+		(*pos)++;
+	tokens[(*ntokens)++] = (struct token){ TOKEN_STRING_LITERAL, strdup(buf) };
 }
 
 struct token *lexer_tokenize(const char *source, int *count)
@@ -319,6 +338,9 @@ struct token *lexer_tokenize(const char *source, int *count)
 				fprintf(stderr, "redix: unexpected character '|'\n");
 				exit(1);
 			}
+			break;
+		case '"':
+			scan_string(source, &position, tokens, &ntokens);
 			break;
 		default:
 			if (isdigit(c)) {

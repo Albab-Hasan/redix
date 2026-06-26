@@ -55,6 +55,11 @@ static struct ast_node *parse_primary(void)
 	struct ast_node *node;
 	struct ast_node *binary;
 
+	if (current()->type == TOKEN_STRING_LITERAL) {
+		tok = &tokens[position++];
+		return make_node(NODE_STRING, tok->value);
+	}
+
 	if (current()->type == TOKEN_NUMBER) {
 		tok = &tokens[position++];
 		return make_node(NODE_NUMBER, tok->value);

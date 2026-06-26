@@ -26,6 +26,10 @@ static int stack_offset;
 static char *global_vars[MAX_GLOBALS];
 static int global_count;
 
+#define MAX_STRINGS 64
+static char *string_lits[MAX_STRINGS];
+static int string_count;
+
 static int is_global(const char *name)
 {
 	int i;
@@ -120,6 +124,21 @@ static void emit(const char *fmt, ...)
 	vfprintf(out, fmt, args);
 	va_end(args);
 	fprintf(out, "\n");
+}
+
+static void collect_strings(struct ast_node *node)
+{
+	int i;
+
+	if (node->type == NODE_STRING) {
+		for (i = 0; i < string_count; i++)
+			if (strcmp(string_lits[i], node->value) == 0)
+				return;
+		string_lits[string_count++] = node->value;
+		return;
+	}
+	for (i = 0; i < node->child_count; i++)
+		collect_strings(node->children[i]);
 }
 
 static void gen_expression(struct ast_node *node);
@@ -506,6 +525,16 @@ static void gen_call(struct ast_node *node)
 }
 
 /* cond ? a : b like if/else but the chosen branch lands in eax */
+static void gen_string(struct ast_node *node)
+{
+	int i;
+
+	for (i = 0; i < string_count; i++)
+		if (strcmp(string_lits[i], node->value) == 0)
+			break;
+	emit("\tleaq .LC%d(%%rip), %%rax", i);
+}
+
 static void gen_ternary(struct ast_node *node)
 {
 	int lbl = label_count++;
@@ -537,6 +566,7 @@ static void gen_expression(struct ast_node *node)
 	case NODE_DEREF:		gen_deref(node);		break;
 	case NODE_DEREF_ASSIGN:		gen_deref_assign(node);		break;
 	case NODE_TERNARY:		gen_ternary(node);		break;
+	case NODE_STRING:		gen_string(node);		break;
 	default:
 		fprintf(stderr, "codegen: bad expression node type %d\n",
 				node->type);
@@ -707,7 +737,7 @@ static void gen_statement(struct ast_node *node)
 	case NODE_POSTFIX_DEC:
 	case NODE_DEREF:
 	case NODE_TERNARY:
-		/* expression statement */
+	case NODE_STRING:
 		gen_expression(node);
 		break;
 	default:
@@ -835,11 +865,20 @@ static void gen_program(struct ast_node *node)
 	int i;
 	int has_globals = 0;
 
-	/* register all globals first so functions can reference them */
+	collect_strings(node);
+
 	for (i = 0; i < node->child_count; i++)
 		if (node->children[i]->type == NODE_GLOBAL)
 			global_vars[global_count++] =
 				strdup(node->children[i]->value);
+
+	if (string_count > 0) {
+		emit("\t.section .rodata");
+		for (i = 0; i < string_count; i++) {
+			emit(".LC%d:", i);
+			emit("\t.string \"%s\"", string_lits[i]);
+		}
+	}
 
 	for (i = 0; i < node->child_count; i++) {
 		if (node->children[i]->type == NODE_GLOBAL) {
