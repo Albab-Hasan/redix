@@ -24,6 +24,7 @@ code generation. Currently it supports:
 - pointer arithmetic: `p + n`, `p - n`, `p++`, `p--`, pointer difference, and `p[i]` indexing
 - arrays: `int a[N]`, element access `a[i]`, decay to pointer when passed to functions
 - `char` type: declarations, assignments, arithmetic, arrays `char a[N]`, pointer `char *p`, function parameters
+- `sizeof(type)`: `sizeof(int)` → 4, `sizeof(char)` → 1, `sizeof(int *)` / `sizeof(char *)` → 8
 - `//` line comments and `/* */` block comments
 
 ## Building

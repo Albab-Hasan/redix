@@ -145,6 +145,28 @@ static struct ast_node *parse_unary(void)
 		add_child(node, parse_unary());
 		return node;
 	}
+	if (current()->type == TOKEN_SIZEOF) {
+		int sz;
+		char buf[8];
+
+		position++;
+		expect(TOKEN_LPAREN);
+		if (current()->type == TOKEN_INT || current()->type == TOKEN_CHAR) {
+			sz = (current()->type == TOKEN_CHAR) ? 1 : 4;
+			position++;
+			if (current()->type == TOKEN_STAR) {
+				position++;
+				sz = 8;
+			}
+		} else {
+			fprintf(stderr, "parser: sizeof expects a type\n");
+			exit(1);
+			sz = 0;
+		}
+		expect(TOKEN_RPAREN);
+		sprintf(buf, "%d", sz);
+		return make_node(NODE_NUMBER, buf);
+	}
 	return parse_primary();
 }
 

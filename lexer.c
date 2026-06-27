@@ -62,6 +62,7 @@ const char *token_type_name(enum token_type type)
 	case TOKEN_RBRACKET:		return "TOKEN_RBRACKET";
 	case TOKEN_CHAR:		return "TOKEN_CHAR";
 	case TOKEN_STRING_LITERAL:	return "TOKEN_STRING_LITERAL";
+	case TOKEN_SIZEOF:		return "TOKEN_SIZEOF";
 	}
 	return "UNKNOWN";
 }
@@ -81,6 +82,7 @@ static const struct {
 	{ "break",    TOKEN_BREAK },
 	{ "continue", TOKEN_CONTINUE },
 	{ "char",     TOKEN_CHAR },
+	{ "sizeof",   TOKEN_SIZEOF },
 };
 
 #define NKEYWORDS (sizeof(keywords) / sizeof(keywords[0]))
