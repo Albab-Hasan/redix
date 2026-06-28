@@ -12,7 +12,7 @@ static char loop_cont_label[64];
 
 /* variable stack map tracks where each local lives on the stack */
 #define MAX_VARS 128
-static struct {
+static struct var_entry {
 	char *name;
 	int offset;    /* negative offset from rbp */
 	int is_ptr;
@@ -40,49 +40,17 @@ static int is_global(const char *name)
 	return 0;
 }
 
-/* look up a variable stack offset by name */
-static int find_var(const char *name)
+/* single scan returning pointer to the whole entry so callers read all fields at once */
+static struct var_entry *lookup_var(const char *name)
 {
 	int i;
 
-	for (i = var_count - 1; i >= 0; i--) {
+	for (i = var_count - 1; i >= 0; i--)
 		if (strcmp(var_map[i].name, name) == 0)
-			return var_map[i].offset;
-	}
+			return &var_map[i];
 	fprintf(stderr, "codegen: undefined variable '%s'\n", name);
 	exit(1);
-	return 0;
-}
-
-static int var_is_ptr(const char *name)
-{
-	int i;
-
-	for (i = var_count - 1; i >= 0; i--)
-		if (strcmp(var_map[i].name, name) == 0)
-			return var_map[i].is_ptr;
-	return 0;
-}
-
-static int var_is_array(const char *name)
-{
-	int i;
-
-	for (i = var_count - 1; i >= 0; i--)
-		if (strcmp(var_map[i].name, name) == 0)
-			return var_map[i].is_array;
-	return 0;
-}
-
-/* returns elem_size for the named var -- 1 for char 4 for int */
-static int var_elem_size(const char *name)
-{
-	int i;
-
-	for (i = var_count - 1; i >= 0; i--)
-		if (strcmp(var_map[i].name, name) == 0)
-			return var_map[i].elem_size;
-	return 4;
+	return NULL;
 }
 
 /* add a new variable to the stack map -- all scalar/ptr vars use 8-byte slots */
@@ -229,16 +197,22 @@ static int is_compare_op(const char *op)
  * int* returns 4 char* returns 1 non-pointer returns 0 */
 static int expr_ptr_scale(struct ast_node *node)
 {
+	struct var_entry *v;
 	int l;
 	int r;
 
 	switch (node->type) {
 	case NODE_VAR:
-		if (!var_is_ptr(node->value))
+		if (is_global(node->value))
 			return 0;
-		return var_elem_size(node->value);
+		v = lookup_var(node->value);
+		if (!v->is_ptr)
+			return 0;
+		return v->elem_size;
 	case NODE_ADDR_OF:
-		return var_elem_size(node->value);
+		if (is_global(node->value))
+			return 4;
+		return lookup_var(node->value)->elem_size;
 	case NODE_BINARY:
 		if (node->value[1] != '\0')
 			return 0;
@@ -307,33 +281,39 @@ static void gen_binary(struct ast_node *node)
 
 static void gen_var(struct ast_node *node)
 {
+	struct var_entry *v;
+
 	if (is_global(node->value)) {
 		emit("\tmovl %s(%%rip), %%eax", node->value);
 		return;
 	}
-	if (var_is_array(node->value))
-		emit("\tleaq %d(%%rbp), %%rax", find_var(node->value));
-	else if (var_is_ptr(node->value))
-		emit("\tmovq %d(%%rbp), %%rax", find_var(node->value));
-	else if (var_elem_size(node->value) == 1)
-		emit("\tmovsbl %d(%%rbp), %%eax", find_var(node->value));
+	v = lookup_var(node->value);
+	if (v->is_array)
+		emit("\tleaq %d(%%rbp), %%rax", v->offset);
+	else if (v->is_ptr)
+		emit("\tmovq %d(%%rbp), %%rax", v->offset);
+	else if (v->elem_size == 1)
+		emit("\tmovsbl %d(%%rbp), %%eax", v->offset);
 	else
-		emit("\tmovl %d(%%rbp), %%eax", find_var(node->value));
+		emit("\tmovl %d(%%rbp), %%eax", v->offset);
 }
 
 static void gen_assign(struct ast_node *node)
 {
+	struct var_entry *v;
+
 	gen_expression(node->children[0]);
 	if (is_global(node->value)) {
 		emit("\tmovl %%eax, %s(%%rip)", node->value);
 		return;
 	}
-	if (var_is_ptr(node->value))
-		emit("\tmovq %%rax, %d(%%rbp)", find_var(node->value));
-	else if (var_elem_size(node->value) == 1)
-		emit("\tmovb %%al, %d(%%rbp)", find_var(node->value));
+	v = lookup_var(node->value);
+	if (v->is_ptr)
+		emit("\tmovq %%rax, %d(%%rbp)", v->offset);
+	else if (v->elem_size == 1)
+		emit("\tmovb %%al, %d(%%rbp)", v->offset);
 	else
-		emit("\tmovl %%eax, %d(%%rbp)", find_var(node->value));
+		emit("\tmovl %%eax, %d(%%rbp)", v->offset);
 }
 
 static void gen_addr_of(struct ast_node *node)
@@ -342,18 +322,22 @@ static void gen_addr_of(struct ast_node *node)
 		emit("\tleaq %s(%%rip), %%rax", node->value);
 		return;
 	}
-	emit("\tleaq %d(%%rbp), %%rax", find_var(node->value));
+	emit("\tleaq %d(%%rbp), %%rax", lookup_var(node->value)->offset);
 }
 
 /* element size the pointer points to -- used to pick load instruction */
 static int expr_deref_size(struct ast_node *node)
 {
+	struct var_entry *v;
 	int scale;
 
 	switch (node->type) {
 	case NODE_VAR:
-		if (var_is_ptr(node->value))
-			return var_elem_size(node->value);
+		if (is_global(node->value))
+			return 4;
+		v = lookup_var(node->value);
+		if (v->is_ptr)
+			return v->elem_size;
 		return 4;
 	default:
 		scale = expr_ptr_scale(node);
@@ -407,101 +391,39 @@ static void gen_char_ptr_declaration(struct ast_node *node)
 	}
 }
 
-/* prefix: increment/decrement first result is the new value */
-static void gen_prefix_inc(struct ast_node *node)
+/* delta is +1 or -1
+ * post: load old value before mutating (postfix semantics) */
+static void gen_inc_dec(struct ast_node *node, int delta, int post)
 {
+	struct var_entry *v;
+	const char *op;
 	int off;
 	int esz;
 
+	op = (delta > 0) ? "add" : "sub";
 	if (is_global(node->value)) {
-		emit("\taddl $1, %s(%%rip)", node->value);
-		emit("\tmovl %s(%%rip), %%eax", node->value);
+		if (post)
+			emit("\tmovl %s(%%rip), %%eax", node->value);
+		emit("\t%sl $1, %s(%%rip)", op, node->value);
+		if (!post)
+			emit("\tmovl %s(%%rip), %%eax", node->value);
 		return;
 	}
-	off = find_var(node->value);
-	esz = var_elem_size(node->value);
-	if (var_is_ptr(node->value)) {
-		emit("\taddq $%d, %d(%%rbp)", esz, off);
-		emit("\tmovq %d(%%rbp), %%rax", off);
-	} else if (esz == 1) {
-		emit("\taddb $1, %d(%%rbp)", off);
-		emit("\tmovsbl %d(%%rbp), %%eax", off);
-	} else {
-		emit("\taddl $1, %d(%%rbp)", off);
-		emit("\tmovl %d(%%rbp), %%eax", off);
+	v = lookup_var(node->value);
+	off = v->offset;
+	esz = v->elem_size;
+	if (post) {
+		if (v->is_ptr)     emit("\tmovq %d(%%rbp), %%rax", off);
+		else if (esz == 1) emit("\tmovsbl %d(%%rbp), %%eax", off);
+		else               emit("\tmovl %d(%%rbp), %%eax", off);
 	}
-}
-
-static void gen_prefix_dec(struct ast_node *node)
-{
-	int off;
-	int esz;
-
-	if (is_global(node->value)) {
-		emit("\tsubl $1, %s(%%rip)", node->value);
-		emit("\tmovl %s(%%rip), %%eax", node->value);
-		return;
-	}
-	off = find_var(node->value);
-	esz = var_elem_size(node->value);
-	if (var_is_ptr(node->value)) {
-		emit("\tsubq $%d, %d(%%rbp)", esz, off);
-		emit("\tmovq %d(%%rbp), %%rax", off);
-	} else if (esz == 1) {
-		emit("\tsubb $1, %d(%%rbp)", off);
-		emit("\tmovsbl %d(%%rbp), %%eax", off);
-	} else {
-		emit("\tsubl $1, %d(%%rbp)", off);
-		emit("\tmovl %d(%%rbp), %%eax", off);
-	}
-}
-
-/* postfix: load old value first then mutate memory */
-static void gen_postfix_inc(struct ast_node *node)
-{
-	int off;
-	int esz;
-
-	if (is_global(node->value)) {
-		emit("\tmovl %s(%%rip), %%eax", node->value);
-		emit("\taddl $1, %s(%%rip)", node->value);
-		return;
-	}
-	off = find_var(node->value);
-	esz = var_elem_size(node->value);
-	if (var_is_ptr(node->value)) {
-		emit("\tmovq %d(%%rbp), %%rax", off);
-		emit("\taddq $%d, %d(%%rbp)", esz, off);
-	} else if (esz == 1) {
-		emit("\tmovsbl %d(%%rbp), %%eax", off);
-		emit("\taddb $1, %d(%%rbp)", off);
-	} else {
-		emit("\tmovl %d(%%rbp), %%eax", off);
-		emit("\taddl $1, %d(%%rbp)", off);
-	}
-}
-
-static void gen_postfix_dec(struct ast_node *node)
-{
-	int off;
-	int esz;
-
-	if (is_global(node->value)) {
-		emit("\tmovl %s(%%rip), %%eax", node->value);
-		emit("\tsubl $1, %s(%%rip)", node->value);
-		return;
-	}
-	off = find_var(node->value);
-	esz = var_elem_size(node->value);
-	if (var_is_ptr(node->value)) {
-		emit("\tmovq %d(%%rbp), %%rax", off);
-		emit("\tsubq $%d, %d(%%rbp)", esz, off);
-	} else if (esz == 1) {
-		emit("\tmovsbl %d(%%rbp), %%eax", off);
-		emit("\tsubb $1, %d(%%rbp)", off);
-	} else {
-		emit("\tmovl %d(%%rbp), %%eax", off);
-		emit("\tsubl $1, %d(%%rbp)", off);
+	if (v->is_ptr)         emit("\t%sq $%d, %d(%%rbp)", op, esz, off);
+	else if (esz == 1)     emit("\t%sb $1, %d(%%rbp)", op, off);
+	else                   emit("\t%sl $1, %d(%%rbp)", op, off);
+	if (!post) {
+		if (v->is_ptr)     emit("\tmovq %d(%%rbp), %%rax", off);
+		else if (esz == 1) emit("\tmovsbl %d(%%rbp), %%eax", off);
+		else               emit("\tmovl %d(%%rbp), %%eax", off);
 	}
 }
 
@@ -558,10 +480,10 @@ static void gen_expression(struct ast_node *node)
 	case NODE_VAR:			gen_var(node);			break;
 	case NODE_ASSIGN:		gen_assign(node);		break;
 	case NODE_CALL:			gen_call(node);			break;
-	case NODE_PREFIX_INC:		gen_prefix_inc(node);		break;
-	case NODE_PREFIX_DEC:		gen_prefix_dec(node);		break;
-	case NODE_POSTFIX_INC:		gen_postfix_inc(node);		break;
-	case NODE_POSTFIX_DEC:		gen_postfix_dec(node);		break;
+	case NODE_PREFIX_INC:		gen_inc_dec(node, +1, 0);	break;
+	case NODE_PREFIX_DEC:		gen_inc_dec(node, -1, 0);	break;
+	case NODE_POSTFIX_INC:		gen_inc_dec(node, +1, 1);	break;
+	case NODE_POSTFIX_DEC:		gen_inc_dec(node, -1, 1);	break;
 	case NODE_ADDR_OF:		gen_addr_of(node);		break;
 	case NODE_DEREF:		gen_deref(node);		break;
 	case NODE_DEREF_ASSIGN:		gen_deref_assign(node);		break;
