@@ -25,6 +25,7 @@ code generation. Currently it supports:
 - arrays: `int a[N]`, element access `a[i]`, decay to pointer when passed to functions
 - `char` type: declarations, assignments, arithmetic, arrays `char a[N]`, pointer `char *p`, function parameters
 - `sizeof(type)`: `sizeof(int)` → 4, `sizeof(char)` → 1, `sizeof(int *)` / `sizeof(char *)` → 8
+- structs: `struct name { fields; }` definitions, local struct variables, member access and assignment via `.`
 - `//` line comments and `/* */` block comments
 
 ## Building

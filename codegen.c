@@ -17,7 +17,9 @@ static struct var_entry {
 	int offset;    /* negative offset from rbp */
 	int is_ptr;
 	int is_array;
+	int is_struct;
 	int elem_size; /* 1 for char 4 for int */
+	char struct_type[64];
 } var_map[MAX_VARS];
 static int var_count;
 static int stack_offset;
@@ -29,6 +31,31 @@ static int global_count;
 #define MAX_STRINGS 64
 static char *string_lits[MAX_STRINGS];
 static int string_count;
+
+#define MAX_FIELDS 16
+#define MAX_STRUCTS 16
+static struct {
+	char name[64];
+	int offset;
+} struct_flds[MAX_STRUCTS][MAX_FIELDS];
+static struct {
+	char name[64];
+	int field_count;
+	int total_size;
+} struct_types[MAX_STRUCTS];
+static int struct_type_count;
+
+static int lookup_struct(const char *name)
+{
+	int i;
+
+	for (i = 0; i < struct_type_count; i++)
+		if (strcmp(struct_types[i].name, name) == 0)
+			return i;
+	fprintf(stderr, "codegen: unknown struct type '%s'\n", name);
+	exit(1);
+	return -1;
+}
 
 static int is_global(const char *name)
 {
@@ -61,7 +88,31 @@ static int declare_var(const char *name, int is_ptr, int elem_size)
 	var_map[var_count].offset = stack_offset;
 	var_map[var_count].is_ptr = is_ptr;
 	var_map[var_count].is_array = 0;
+	var_map[var_count].is_struct = 0;
 	var_map[var_count].elem_size = elem_size;
+	var_map[var_count].struct_type[0] = '\0';
+	var_count++;
+	return stack_offset;
+}
+
+static int declare_struct_var(const char *name, const char *type_name)
+{
+	int idx;
+	int bytes;
+
+	idx = lookup_struct(type_name);
+	bytes = struct_types[idx].total_size;
+	if (bytes % 8 != 0)
+		bytes += 8 - (bytes % 8);
+	stack_offset -= bytes;
+	var_map[var_count].name = strdup(name);
+	var_map[var_count].offset = stack_offset;
+	var_map[var_count].is_ptr = 0;
+	var_map[var_count].is_array = 0;
+	var_map[var_count].is_struct = 1;
+	var_map[var_count].elem_size = 4;
+	strncpy(var_map[var_count].struct_type, type_name, 63);
+	var_map[var_count].struct_type[63] = '\0';
 	var_count++;
 	return stack_offset;
 }
@@ -78,7 +129,9 @@ static int declare_array(const char *name, int size, int elem_size)
 	var_map[var_count].offset = stack_offset;
 	var_map[var_count].is_ptr = 1;
 	var_map[var_count].is_array = 1;
+	var_map[var_count].is_struct = 0;
 	var_map[var_count].elem_size = elem_size;
+	var_map[var_count].struct_type[0] = '\0';
 	var_count++;
 	return stack_offset;
 }
@@ -111,6 +164,64 @@ static void collect_strings(struct ast_node *node)
 
 static void gen_expression(struct ast_node *node);
 static void gen_statement(struct ast_node *node);
+
+static void gen_struct_def(struct ast_node *node)
+{
+	int i;
+	int idx;
+	int off;
+
+	idx = struct_type_count++;
+	strncpy(struct_types[idx].name, node->value, 63);
+	struct_types[idx].name[63] = '\0';
+	struct_types[idx].field_count = node->child_count;
+	off = 0;
+	for (i = 0; i < node->child_count; i++) {
+		strncpy(struct_flds[idx][i].name, node->children[i]->value, 63);
+		struct_flds[idx][i].name[63] = '\0';
+		struct_flds[idx][i].offset = off;
+		off += 4;
+	}
+	struct_types[idx].total_size = off;
+}
+
+static void gen_struct_decl(struct ast_node *node)
+{
+	declare_struct_var(node->children[0]->value, node->value);
+}
+
+static void gen_member(struct ast_node *node)
+{
+	struct var_entry *v;
+	int idx;
+	int i;
+	int combined;
+
+	v = lookup_var(node->children[0]->value);
+	idx = lookup_struct(v->struct_type);
+	for (i = 0; i < struct_types[idx].field_count; i++)
+		if (strcmp(struct_flds[idx][i].name, node->value) == 0)
+			break;
+	combined = v->offset + struct_flds[idx][i].offset;
+	emit("\tmovl %d(%%rbp), %%eax", combined);
+}
+
+static void gen_member_assign(struct ast_node *node)
+{
+	struct var_entry *v;
+	int idx;
+	int i;
+	int combined;
+
+	v = lookup_var(node->children[0]->value);
+	idx = lookup_struct(v->struct_type);
+	for (i = 0; i < struct_types[idx].field_count; i++)
+		if (strcmp(struct_flds[idx][i].name, node->value) == 0)
+			break;
+	combined = v->offset + struct_flds[idx][i].offset;
+	gen_expression(node->children[1]);
+	emit("\tmovl %%eax, %d(%%rbp)", combined);
+}
 
 static void gen_number(struct ast_node *node)
 {
@@ -489,6 +600,8 @@ static void gen_expression(struct ast_node *node)
 	case NODE_DEREF_ASSIGN:		gen_deref_assign(node);		break;
 	case NODE_TERNARY:		gen_ternary(node);		break;
 	case NODE_STRING:		gen_string(node);		break;
+	case NODE_MEMBER:		gen_member(node);		break;
+	case NODE_MEMBER_ASSIGN:	gen_member_assign(node);	break;
 	default:
 		fprintf(stderr, "codegen: bad expression node type %d\n",
 				node->type);
@@ -640,6 +753,7 @@ static void gen_statement(struct ast_node *node)
 	case NODE_CHAR_PTR_DECLARATION:	gen_char_ptr_declaration(node);	break;
 	case NODE_ARRAY_DECL:		gen_array_decl(node);		break;
 	case NODE_CHAR_ARRAY_DECL:	gen_char_array_decl(node);	break;
+	case NODE_STRUCT_DECL:		gen_struct_decl(node);		break;
 	case NODE_COMPOUND:		gen_compound(node);		break;
 	case NODE_IF:			gen_if(node);			break;
 	case NODE_WHILE:		gen_while(node);		break;
@@ -660,6 +774,8 @@ static void gen_statement(struct ast_node *node)
 	case NODE_DEREF:
 	case NODE_TERNARY:
 	case NODE_STRING:
+	case NODE_MEMBER:
+	case NODE_MEMBER_ASSIGN:
 		gen_expression(node);
 		break;
 	default:
@@ -676,6 +792,7 @@ static int count_stack_bytes(struct ast_node *node)
 	int total = 0;
 	int n;
 	int bytes;
+	int sidx;
 
 	if (node->type == NODE_DECLARATION
 			|| node->type == NODE_PTR_DECLARATION
@@ -692,6 +809,13 @@ static int count_stack_bytes(struct ast_node *node)
 	if (node->type == NODE_CHAR_ARRAY_DECL) {
 		n = atoi(node->children[0]->value);
 		bytes = n * 1;
+		if (bytes % 8 != 0)
+			bytes += 8 - (bytes % 8);
+		return bytes;
+	}
+	if (node->type == NODE_STRUCT_DECL) {
+		sidx = lookup_struct(node->value);
+		bytes = struct_types[sidx].total_size;
 		if (bytes % 8 != 0)
 			bytes += 8 - (bytes % 8);
 		return bytes;
@@ -788,6 +912,10 @@ static void gen_program(struct ast_node *node)
 	int has_globals = 0;
 
 	collect_strings(node);
+
+	for (i = 0; i < node->child_count; i++)
+		if (node->children[i]->type == NODE_STRUCT_DEF)
+			gen_struct_def(node->children[i]);
 
 	for (i = 0; i < node->child_count; i++)
 		if (node->children[i]->type == NODE_GLOBAL)

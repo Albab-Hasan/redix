@@ -63,6 +63,8 @@ const char *token_type_name(enum token_type type)
 	case TOKEN_CHAR:		return "TOKEN_CHAR";
 	case TOKEN_STRING_LITERAL:	return "TOKEN_STRING_LITERAL";
 	case TOKEN_SIZEOF:		return "TOKEN_SIZEOF";
+	case TOKEN_STRUCT:		return "TOKEN_STRUCT";
+	case TOKEN_DOT:			return "TOKEN_DOT";
 	}
 	return "UNKNOWN";
 }
@@ -83,6 +85,7 @@ static const struct {
 	{ "continue", TOKEN_CONTINUE },
 	{ "char",     TOKEN_CHAR },
 	{ "sizeof",   TOKEN_SIZEOF },
+	{ "struct",   TOKEN_STRUCT },
 };
 
 #define NKEYWORDS (sizeof(keywords) / sizeof(keywords[0]))
@@ -340,6 +343,10 @@ struct token *lexer_tokenize(const char *source, int *count)
 				fprintf(stderr, "redix: unexpected character '|'\n");
 				exit(1);
 			}
+			break;
+		case '.':
+			tokens[ntokens++] = make_token(TOKEN_DOT, ".");
+			position++;
 			break;
 		case '"':
 			scan_string(source, &position, tokens, &ntokens);

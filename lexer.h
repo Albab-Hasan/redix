@@ -50,6 +50,8 @@ enum token_type {
 	TOKEN_CHAR,
 	TOKEN_STRING_LITERAL,
 	TOKEN_SIZEOF,
+	TOKEN_STRUCT,
+	TOKEN_DOT,
 };
 
 /* a tokens type and the actual text it came from */

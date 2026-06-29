@@ -97,6 +97,14 @@ static struct ast_node *parse_primary(void)
 			add_child(node, binary);
 			return node;
 		}
+		if (current()->type == TOKEN_DOT) {
+			struct token *field;
+			position++;
+			field = expect(TOKEN_IDENTIFIER);
+			node = make_node(NODE_MEMBER, field->value);
+			add_child(node, make_node(NODE_VAR, tok->value));
+			return node;
+		}
 		return make_node(NODE_VAR, tok->value);
 	}
 
@@ -280,7 +288,9 @@ static struct ast_node *parse_expression(void)
 	struct ast_node *node;
 	struct ast_node *binary;
 	struct ast_node *ptr_expr;
+	struct ast_node *var_node;
 	const char *op;
+	char *fname;
 
 	left = parse_ternary();
 
@@ -294,6 +304,18 @@ static struct ast_node *parse_expression(void)
 			free(left);
 			node = make_node(NODE_DEREF_ASSIGN, NULL);
 			add_child(node, ptr_expr);
+			add_child(node, parse_expression());
+			return node;
+		}
+		if (left->type == NODE_MEMBER) {
+			fname = strdup(left->value);
+			var_node = left->children[0];
+			free(left->children);
+			free(left->value);
+			free(left);
+			node = make_node(NODE_MEMBER_ASSIGN, fname);
+			free(fname);
+			add_child(node, var_node);
 			add_child(node, parse_expression());
 			return node;
 		}
@@ -456,6 +478,46 @@ static struct ast_node *parse_simple_keyword(enum node_type type)
 	return node;
 }
 
+static struct ast_node *parse_local_struct_decl(void)
+{
+	struct token *tname;
+	struct token *vname;
+	struct ast_node *node;
+
+	position++; /* consume 'struct' */
+	tname = expect(TOKEN_IDENTIFIER);
+	vname = expect(TOKEN_IDENTIFIER);
+	node = make_node(NODE_STRUCT_DECL, tname->value);
+	add_child(node, make_node(NODE_VAR, vname->value));
+	expect(TOKEN_SEMICOLON);
+	return node;
+}
+
+static struct ast_node *parse_struct_def(void)
+{
+	struct token *name;
+	struct token *fname;
+	struct ast_node *node;
+	int is_char;
+
+	position++; /* consume 'struct' */
+	name = expect(TOKEN_IDENTIFIER);
+	node = make_node(NODE_STRUCT_DEF, name->value);
+	expect(TOKEN_LBRACE);
+	while (current()->type != TOKEN_RBRACE) {
+		is_char = (current()->type == TOKEN_CHAR);
+		position++;
+		fname = expect(TOKEN_IDENTIFIER);
+		expect(TOKEN_SEMICOLON);
+		add_child(node, make_node(
+			is_char ? NODE_CHAR_DECLARATION : NODE_DECLARATION,
+			fname->value));
+	}
+	expect(TOKEN_RBRACE);
+	expect(TOKEN_SEMICOLON);
+	return node;
+}
+
 /* parse a single statement */
 static struct ast_node *parse_statement(void)
 {
@@ -466,6 +528,7 @@ static struct ast_node *parse_statement(void)
 	case TOKEN_RETURN:	return parse_return();
 	case TOKEN_INT:
 	case TOKEN_CHAR:	return parse_declaration();
+	case TOKEN_STRUCT:	return parse_local_struct_decl();
 	case TOKEN_IF:		return parse_if();
 	case TOKEN_WHILE:	return parse_while();
 	case TOKEN_FOR:		return parse_for();
@@ -554,8 +617,10 @@ struct ast_node *parse(struct token *toks, int count)
 
 	program = make_node(NODE_PROGRAM, NULL);
 	while (current()->type != TOKEN_EOF) {
+		if (current()->type == TOKEN_STRUCT)
+			add_child(program, parse_struct_def());
 		/* peek: int/void/char NAME ( -> function, otherwise -> global */
-		if (position + 2 < token_count
+		else if (position + 2 < token_count
 				&& tokens[position + 2].type == TOKEN_LPAREN)
 			add_child(program, parse_function());
 		else
