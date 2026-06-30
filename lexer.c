@@ -65,6 +65,7 @@ const char *token_type_name(enum token_type type)
 	case TOKEN_SIZEOF:		return "TOKEN_SIZEOF";
 	case TOKEN_STRUCT:		return "TOKEN_STRUCT";
 	case TOKEN_DOT:			return "TOKEN_DOT";
+	case TOKEN_ARROW:		return "TOKEN_ARROW";
 	}
 	return "UNKNOWN";
 }
@@ -262,6 +263,9 @@ struct token *lexer_tokenize(const char *source, int *count)
 				position += 2;
 			} else if (source[position + 1] == '=') {
 				tokens[ntokens++] = make_token(TOKEN_MINUS_ASSIGN, "-=");
+				position += 2;
+			} else if (source[position + 1] == '>') {
+				tokens[ntokens++] = make_token(TOKEN_ARROW, "->");
 				position += 2;
 			} else {
 				tokens[ntokens++] = make_token(TOKEN_MINUS, "-");

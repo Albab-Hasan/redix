@@ -38,8 +38,11 @@ enum node_type {
 	NODE_STRING,
 	NODE_STRUCT_DEF,
 	NODE_STRUCT_DECL,
+	NODE_STRUCT_PTR_DECL,
 	NODE_MEMBER,
 	NODE_MEMBER_ASSIGN,
+	NODE_PTR_MEMBER,
+	NODE_PTR_MEMBER_ASSIGN,
 };
 
 /* a node in the abstrct syntax tree that can have child nodes */

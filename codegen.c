@@ -117,6 +117,21 @@ static int declare_struct_var(const char *name, const char *type_name)
 	return stack_offset;
 }
 
+static int declare_struct_ptr_var(const char *name, const char *type_name)
+{
+	stack_offset -= 8;
+	var_map[var_count].name = strdup(name);
+	var_map[var_count].offset = stack_offset;
+	var_map[var_count].is_ptr = 1;
+	var_map[var_count].is_array = 0;
+	var_map[var_count].is_struct = 0;
+	var_map[var_count].elem_size = 4;
+	strncpy(var_map[var_count].struct_type, type_name, 63);
+	var_map[var_count].struct_type[63] = '\0';
+	var_count++;
+	return stack_offset;
+}
+
 /* allocate N*elem_size bytes on the stack padded to 8-byte boundary */
 static int declare_array(const char *name, int size, int elem_size)
 {
@@ -221,6 +236,52 @@ static void gen_member_assign(struct ast_node *node)
 	combined = v->offset + struct_flds[idx][i].offset;
 	gen_expression(node->children[1]);
 	emit("\tmovl %%eax, %d(%%rbp)", combined);
+}
+
+static void gen_struct_ptr_decl(struct ast_node *node)
+{
+	declare_struct_ptr_var(node->children[0]->value, node->value);
+}
+
+static void gen_ptr_member(struct ast_node *node)
+{
+	struct var_entry *v;
+	int idx;
+	int i;
+	int foff;
+
+	v = lookup_var(node->children[0]->value);
+	idx = lookup_struct(v->struct_type);
+	for (i = 0; i < struct_types[idx].field_count; i++)
+		if (strcmp(struct_flds[idx][i].name, node->value) == 0)
+			break;
+	foff = struct_flds[idx][i].offset;
+	emit("\tmovq %d(%%rbp), %%rax", v->offset);
+	if (foff != 0)
+		emit("\taddq $%d, %%rax", foff);
+	emit("\tmovl (%%rax), %%eax");
+}
+
+static void gen_ptr_member_assign(struct ast_node *node)
+{
+	struct var_entry *v;
+	int idx;
+	int i;
+	int foff;
+
+	v = lookup_var(node->children[0]->value);
+	idx = lookup_struct(v->struct_type);
+	for (i = 0; i < struct_types[idx].field_count; i++)
+		if (strcmp(struct_flds[idx][i].name, node->value) == 0)
+			break;
+	foff = struct_flds[idx][i].offset;
+	gen_expression(node->children[1]);
+	emit("\tpush %%rax");
+	emit("\tmovq %d(%%rbp), %%rax", v->offset);
+	if (foff != 0)
+		emit("\taddq $%d, %%rax", foff);
+	emit("\tpop %%rcx");
+	emit("\tmovl %%ecx, (%%rax)");
 }
 
 static void gen_number(struct ast_node *node)
@@ -602,6 +663,8 @@ static void gen_expression(struct ast_node *node)
 	case NODE_STRING:		gen_string(node);		break;
 	case NODE_MEMBER:		gen_member(node);		break;
 	case NODE_MEMBER_ASSIGN:	gen_member_assign(node);	break;
+	case NODE_PTR_MEMBER:		gen_ptr_member(node);		break;
+	case NODE_PTR_MEMBER_ASSIGN:	gen_ptr_member_assign(node);	break;
 	default:
 		fprintf(stderr, "codegen: bad expression node type %d\n",
 				node->type);
@@ -754,6 +817,7 @@ static void gen_statement(struct ast_node *node)
 	case NODE_ARRAY_DECL:		gen_array_decl(node);		break;
 	case NODE_CHAR_ARRAY_DECL:	gen_char_array_decl(node);	break;
 	case NODE_STRUCT_DECL:		gen_struct_decl(node);		break;
+	case NODE_STRUCT_PTR_DECL:	gen_struct_ptr_decl(node);	break;
 	case NODE_COMPOUND:		gen_compound(node);		break;
 	case NODE_IF:			gen_if(node);			break;
 	case NODE_WHILE:		gen_while(node);		break;
@@ -776,6 +840,8 @@ static void gen_statement(struct ast_node *node)
 	case NODE_STRING:
 	case NODE_MEMBER:
 	case NODE_MEMBER_ASSIGN:
+	case NODE_PTR_MEMBER:
+	case NODE_PTR_MEMBER_ASSIGN:
 		gen_expression(node);
 		break;
 	default:
@@ -813,6 +879,8 @@ static int count_stack_bytes(struct ast_node *node)
 			bytes += 8 - (bytes % 8);
 		return bytes;
 	}
+	if (node->type == NODE_STRUCT_PTR_DECL)
+		return 8;
 	if (node->type == NODE_STRUCT_DECL) {
 		sidx = lookup_struct(node->value);
 		bytes = struct_types[sidx].total_size;
@@ -872,6 +940,13 @@ static void gen_function(struct ast_node *node)
 
 	/* copy params from argument registers onto the stack */
 	for (i = 0; i < num_params && i < 6; i++) {
+		if (node->children[i]->type == NODE_STRUCT_PTR_DECL) {
+			offset = declare_struct_ptr_var(
+					node->children[i]->children[0]->value,
+					node->children[i]->value);
+			emit("\tmovq %s, %d(%%rbp)", ptr_param_regs[i], offset);
+			continue;
+		}
 		is_ptr_param = node->children[i]->type == NODE_PTR_DECLARATION
 				|| node->children[i]->type == NODE_CHAR_PTR_DECLARATION;
 		is_char_param = node->children[i]->type == NODE_CHAR_DECLARATION

@@ -105,6 +105,14 @@ static struct ast_node *parse_primary(void)
 			add_child(node, make_node(NODE_VAR, tok->value));
 			return node;
 		}
+		if (current()->type == TOKEN_ARROW) {
+			struct token *field;
+			position++;
+			field = expect(TOKEN_IDENTIFIER);
+			node = make_node(NODE_PTR_MEMBER, field->value);
+			add_child(node, make_node(NODE_VAR, tok->value));
+			return node;
+		}
 		return make_node(NODE_VAR, tok->value);
 	}
 
@@ -319,6 +327,18 @@ static struct ast_node *parse_expression(void)
 			add_child(node, parse_expression());
 			return node;
 		}
+		if (left->type == NODE_PTR_MEMBER) {
+			fname = strdup(left->value);
+			var_node = left->children[0];
+			free(left->children);
+			free(left->value);
+			free(left);
+			node = make_node(NODE_PTR_MEMBER_ASSIGN, fname);
+			free(fname);
+			add_child(node, var_node);
+			add_child(node, parse_expression());
+			return node;
+		}
 		node = make_node(NODE_ASSIGN, left->value);
 		free_ast(left);
 		add_child(node, parse_expression()); /* right associative */
@@ -483,11 +503,17 @@ static struct ast_node *parse_local_struct_decl(void)
 	struct token *tname;
 	struct token *vname;
 	struct ast_node *node;
+	int is_ptr;
 
 	position++; /* consume 'struct' */
 	tname = expect(TOKEN_IDENTIFIER);
+	is_ptr = 0;
+	if (current()->type == TOKEN_STAR) {
+		is_ptr = 1;
+		position++;
+	}
 	vname = expect(TOKEN_IDENTIFIER);
-	node = make_node(NODE_STRUCT_DECL, tname->value);
+	node = make_node(is_ptr ? NODE_STRUCT_PTR_DECL : NODE_STRUCT_DECL, tname->value);
 	add_child(node, make_node(NODE_VAR, vname->value));
 	expect(TOKEN_SEMICOLON);
 	return node;
@@ -561,22 +587,34 @@ static struct ast_node *parse_function(void)
 	node = make_node(NODE_FUNCTION, name->value);
 	expect(TOKEN_LPAREN);
 	while (current()->type != TOKEN_RPAREN) {
-		is_char_param = (current()->type == TOKEN_CHAR);
-		position++; /* consume int or char */
-		is_ptr_param = 0;
-		if (current()->type == TOKEN_STAR) {
-			is_ptr_param = 1;
+		if (current()->type == TOKEN_STRUCT) {
+			struct token *stype;
+			struct ast_node *param;
 			position++;
+			stype = expect(TOKEN_IDENTIFIER);
+			expect(TOKEN_STAR);
+			pname = expect(TOKEN_IDENTIFIER);
+			param = make_node(NODE_STRUCT_PTR_DECL, stype->value);
+			add_child(param, make_node(NODE_VAR, pname->value));
+			add_child(node, param);
+		} else {
+			is_char_param = (current()->type == TOKEN_CHAR);
+			position++; /* consume int or char */
+			is_ptr_param = 0;
+			if (current()->type == TOKEN_STAR) {
+				is_ptr_param = 1;
+				position++;
+			}
+			pname = expect(TOKEN_IDENTIFIER);
+			if (is_ptr_param)
+				add_child(node, make_node(
+						is_char_param ? NODE_CHAR_PTR_DECLARATION : NODE_PTR_DECLARATION,
+						pname->value));
+			else
+				add_child(node, make_node(
+						is_char_param ? NODE_CHAR_DECLARATION : NODE_DECLARATION,
+						pname->value));
 		}
-		pname = expect(TOKEN_IDENTIFIER);
-		if (is_ptr_param)
-			add_child(node, make_node(
-					is_char_param ? NODE_CHAR_PTR_DECLARATION : NODE_PTR_DECLARATION,
-					pname->value));
-		else
-			add_child(node, make_node(
-					is_char_param ? NODE_CHAR_DECLARATION : NODE_DECLARATION,
-					pname->value));
 		if (current()->type == TOKEN_COMMA)
 			position++;
 	}
