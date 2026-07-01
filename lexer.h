@@ -53,6 +53,10 @@ enum token_type {
 	TOKEN_STRUCT,
 	TOKEN_DOT,
 	TOKEN_ARROW,
+	TOKEN_PIPE,
+	TOKEN_CARET,
+	TOKEN_LSHIFT,
+	TOKEN_RSHIFT,
 };
 
 /* a tokens type and the actual text it came from */

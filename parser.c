@@ -217,6 +217,11 @@ static int is_add(enum token_type t)
 	return t == TOKEN_PLUS || t == TOKEN_MINUS;
 }
 
+static int is_shift(enum token_type t)
+{
+	return t == TOKEN_LSHIFT || t == TOKEN_RSHIFT;
+}
+
 static int is_rel(enum token_type t)
 {
 	return t == TOKEN_LT || t == TOKEN_GT
@@ -226,6 +231,21 @@ static int is_rel(enum token_type t)
 static int is_eq(enum token_type t)
 {
 	return t == TOKEN_EQ || t == TOKEN_NEQ;
+}
+
+static int is_bw_and(enum token_type t)
+{
+	return t == TOKEN_AMPERSAND;
+}
+
+static int is_bw_xor(enum token_type t)
+{
+	return t == TOKEN_CARET;
+}
+
+static int is_bw_or(enum token_type t)
+{
+	return t == TOKEN_PIPE;
 }
 
 static int is_and(enum token_type t)
@@ -248,9 +268,14 @@ static struct ast_node *parse_additive(void)
 	return parse_binop(parse_multiplicative, is_add);
 }
 
+static struct ast_node *parse_shift(void)
+{
+	return parse_binop(parse_additive, is_shift);
+}
+
 static struct ast_node *parse_relational(void)
 {
-	return parse_binop(parse_additive, is_rel);
+	return parse_binop(parse_shift, is_rel);
 }
 
 static struct ast_node *parse_equality(void)
@@ -258,9 +283,24 @@ static struct ast_node *parse_equality(void)
 	return parse_binop(parse_relational, is_eq);
 }
 
+static struct ast_node *parse_bitwise_and(void)
+{
+	return parse_binop(parse_equality, is_bw_and);
+}
+
+static struct ast_node *parse_bitwise_xor(void)
+{
+	return parse_binop(parse_bitwise_and, is_bw_xor);
+}
+
+static struct ast_node *parse_bitwise_or(void)
+{
+	return parse_binop(parse_bitwise_xor, is_bw_or);
+}
+
 static struct ast_node *parse_logical_and(void)
 {
-	return parse_binop(parse_equality, is_and);
+	return parse_binop(parse_bitwise_or, is_and);
 }
 
 static struct ast_node *parse_logical_or(void)

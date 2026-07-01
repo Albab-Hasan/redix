@@ -66,6 +66,10 @@ const char *token_type_name(enum token_type type)
 	case TOKEN_STRUCT:		return "TOKEN_STRUCT";
 	case TOKEN_DOT:			return "TOKEN_DOT";
 	case TOKEN_ARROW:		return "TOKEN_ARROW";
+	case TOKEN_PIPE:		return "TOKEN_PIPE";
+	case TOKEN_CARET:		return "TOKEN_CARET";
+	case TOKEN_LSHIFT:		return "TOKEN_LSHIFT";
+	case TOKEN_RSHIFT:		return "TOKEN_RSHIFT";
 	}
 	return "UNKNOWN";
 }
@@ -307,6 +311,9 @@ struct token *lexer_tokenize(const char *source, int *count)
 			if (source[position + 1] == '=') {
 				tokens[ntokens++] = make_token(TOKEN_LTE, "<=");
 				position += 2;
+			} else if (source[position + 1] == '<') {
+				tokens[ntokens++] = make_token(TOKEN_LSHIFT, "<<");
+				position += 2;
 			} else {
 				tokens[ntokens++] = make_token(TOKEN_LT, "<");
 				position++;
@@ -315,6 +322,9 @@ struct token *lexer_tokenize(const char *source, int *count)
 		case '>':
 			if (source[position + 1] == '=') {
 				tokens[ntokens++] = make_token(TOKEN_GTE, ">=");
+				position += 2;
+			} else if (source[position + 1] == '>') {
+				tokens[ntokens++] = make_token(TOKEN_RSHIFT, ">>");
 				position += 2;
 			} else {
 				tokens[ntokens++] = make_token(TOKEN_GT, ">");
@@ -344,9 +354,13 @@ struct token *lexer_tokenize(const char *source, int *count)
 				tokens[ntokens++] = make_token(TOKEN_OR, "||");
 				position += 2;
 			} else {
-				fprintf(stderr, "redix: unexpected character '|'\n");
-				exit(1);
+				tokens[ntokens++] = make_token(TOKEN_PIPE, "|");
+				position++;
 			}
+			break;
+		case '^':
+			tokens[ntokens++] = make_token(TOKEN_CARET, "^");
+			position++;
 			break;
 		case '.':
 			tokens[ntokens++] = make_token(TOKEN_DOT, ".");

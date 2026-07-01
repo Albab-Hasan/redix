@@ -362,7 +362,33 @@ static int is_arith_op(const char *op)
 static int is_compare_op(const char *op)
 {
 	char c = op[0];
-	return c == '<' || c == '>' || c == '=' || c == '!';
+	if (c == '<' || c == '>') return op[1] == '=' || op[1] == '\0';
+	return c == '=' || c == '!';
+}
+
+static int is_bitwise_op(const char *op)
+{
+	return (op[1] == '\0' && (op[0] == '&' || op[0] == '|' || op[0] == '^'))
+		|| (op[0] == '<' && op[1] == '<')
+		|| (op[0] == '>' && op[1] == '>');
+}
+
+/* ecx = left, eax = right (shift count for shifts) */
+static void gen_bitwise(const char *op)
+{
+	if (op[0] == '&') {
+		emit("\tandl %%ecx, %%eax");
+	} else if (op[0] == '|') {
+		emit("\torl %%ecx, %%eax");
+	} else if (op[0] == '^') {
+		emit("\txorl %%ecx, %%eax");
+	} else if (op[0] == '<') {
+		emit("\txchg %%eax, %%ecx");
+		emit("\tsall %%cl, %%eax");
+	} else {
+		emit("\txchg %%eax, %%ecx");
+		emit("\tsarl %%cl, %%eax");
+	}
 }
 
 /* returns the pointer scale for this expression (0 if not a pointer)
@@ -447,6 +473,8 @@ static void gen_binary(struct ast_node *node)
 		gen_arith(op);
 	else if (is_compare_op(op))
 		gen_compare(op);
+	else if (is_bitwise_op(op))
+		gen_bitwise(op);
 	else
 		gen_logical(op); /* && or || */
 }
