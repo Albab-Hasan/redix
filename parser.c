@@ -209,7 +209,7 @@ static struct ast_node *parse_binop(struct ast_node *(*next)(void),
 
 static int is_mul(enum token_type t)
 {
-	return t == TOKEN_STAR || t == TOKEN_SLASH;
+	return t == TOKEN_STAR || t == TOKEN_SLASH || t == TOKEN_PERCENT;
 }
 
 static int is_add(enum token_type t)

@@ -322,6 +322,12 @@ static void gen_arith(const char *op)
 		emit("\tmovl %%ecx, %%eax");
 		emit("\tcdq");
 		emit("\tidivl %%ebx");
+	} else if (strcmp(op, "%") == 0) {
+		emit("\tmovl %%eax, %%ebx");
+		emit("\tmovl %%ecx, %%eax");
+		emit("\tcdq");
+		emit("\tidivl %%ebx");
+		emit("\tmovl %%edx, %%eax");
 	}
 }
 
@@ -356,7 +362,7 @@ static void gen_logical(const char *op)
 static int is_arith_op(const char *op)
 {
 	return op[1] == '\0' && (op[0] == '+' || op[0] == '-'
-			|| op[0] == '*' || op[0] == '/');
+			|| op[0] == '*' || op[0] == '/' || op[0] == '%');
 }
 
 static int is_compare_op(const char *op)

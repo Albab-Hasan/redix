@@ -6,7 +6,7 @@ My goal for this project is to learn how compilers work by building a
 functional compiler. So far I've implemented a lexer, a parser and
 code generation. Currently it supports:
 
-- arithmetic operators: `+`, `-`, `*`, `/`
+- arithmetic operators: `+`, `-`, `*`, `/`, `%`
 - bitwise operators: `&`, `|`, `^`, `<<`, `>>`
 - unary operators: `-`, `~`, `!`
 - increment/decrement: prefix `++x`, `--x` and postfix `x++`, `x--`

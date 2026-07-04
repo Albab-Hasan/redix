@@ -70,6 +70,7 @@ const char *token_type_name(enum token_type type)
 	case TOKEN_CARET:		return "TOKEN_CARET";
 	case TOKEN_LSHIFT:		return "TOKEN_LSHIFT";
 	case TOKEN_RSHIFT:		return "TOKEN_RSHIFT";
+	case TOKEN_PERCENT:		return "TOKEN_PERCENT";
 	}
 	return "UNKNOWN";
 }
@@ -357,6 +358,10 @@ struct token *lexer_tokenize(const char *source, int *count)
 				tokens[ntokens++] = make_token(TOKEN_PIPE, "|");
 				position++;
 			}
+			break;
+		case '%':
+			tokens[ntokens++] = make_token(TOKEN_PERCENT, "%");
+			position++;
 			break;
 		case '^':
 			tokens[ntokens++] = make_token(TOKEN_CARET, "^");
