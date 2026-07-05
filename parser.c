@@ -538,6 +538,43 @@ static struct ast_node *parse_simple_keyword(enum node_type type)
 	return node;
 }
 
+static struct ast_node *parse_switch(void)
+{
+	struct ast_node *node;
+	struct ast_node *arm;
+	struct token *val;
+
+	position++; /* consume 'switch' */
+	node = make_node(NODE_SWITCH, NULL);
+	expect(TOKEN_LPAREN);
+	add_child(node, parse_expression());
+	expect(TOKEN_RPAREN);
+	expect(TOKEN_LBRACE);
+	while (current()->type != TOKEN_RBRACE) {
+		if (current()->type == TOKEN_CASE) {
+			position++;
+			val = expect(TOKEN_NUMBER);
+			expect(TOKEN_COLON);
+			arm = make_node(NODE_CASE, val->value);
+		} else if (current()->type == TOKEN_DEFAULT) {
+			position++;
+			expect(TOKEN_COLON);
+			arm = make_node(NODE_DEFAULT, NULL);
+		} else {
+			fprintf(stderr, "parser: expected case or default in switch\n");
+			exit(1);
+			arm = NULL;
+		}
+		while (current()->type != TOKEN_CASE
+				&& current()->type != TOKEN_DEFAULT
+				&& current()->type != TOKEN_RBRACE)
+			add_child(arm, parse_statement());
+		add_child(node, arm);
+	}
+	expect(TOKEN_RBRACE);
+	return node;
+}
+
 static struct ast_node *parse_local_struct_decl(void)
 {
 	struct token *tname;
@@ -600,6 +637,7 @@ static struct ast_node *parse_statement(void)
 	case TOKEN_FOR:		return parse_for();
 	case TOKEN_BREAK:	return parse_simple_keyword(NODE_BREAK);
 	case TOKEN_CONTINUE:	return parse_simple_keyword(NODE_CONTINUE);
+	case TOKEN_SWITCH:	return parse_switch();
 	default:
 		/* expression statement like assignments */
 		node = parse_expression();

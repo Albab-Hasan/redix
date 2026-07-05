@@ -43,6 +43,9 @@ enum node_type {
 	NODE_MEMBER_ASSIGN,
 	NODE_PTR_MEMBER,
 	NODE_PTR_MEMBER_ASSIGN,
+	NODE_SWITCH,
+	NODE_CASE,
+	NODE_DEFAULT,
 };
 
 /* a node in the abstrct syntax tree that can have child nodes */

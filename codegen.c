@@ -812,6 +812,53 @@ static void gen_while(struct ast_node *node)
 	pop_loop_labels(old_break, old_cont);
 }
 
+static void gen_switch(struct ast_node *node)
+{
+	int lbl = label_count++;
+	int i;
+	int j;
+	int default_idx;
+	int save_off;
+	char old_break[64];
+	char old_cont[64];
+	char end_label[64];
+
+	default_idx = -1;
+	sprintf(end_label, ".Lswitch_end%d", lbl);
+	push_loop_labels(old_break, old_cont, end_label, loop_cont_label);
+
+	stack_offset -= 8;
+	save_off = stack_offset;
+
+	gen_expression(node->children[0]);
+	emit("\tmovl %%eax, %d(%%rbp)", save_off);
+
+	for (i = 1; i < node->child_count; i++) {
+		if (node->children[i]->type == NODE_CASE) {
+			emit("\tcmpl $%s, %d(%%rbp)", node->children[i]->value, save_off);
+			emit("\tje .Lcase%d_%d", lbl, i);
+		} else {
+			default_idx = i;
+		}
+	}
+	if (default_idx >= 0)
+		emit("\tjmp .Ldefault%d", lbl);
+	else
+		emit("\tjmp %s", end_label);
+
+	for (i = 1; i < node->child_count; i++) {
+		if (node->children[i]->type == NODE_CASE)
+			emit(".Lcase%d_%d:", lbl, i);
+		else
+			emit(".Ldefault%d:", lbl);
+		for (j = 0; j < node->children[i]->child_count; j++)
+			gen_statement(node->children[i]->children[j]);
+	}
+
+	emit("%s:", end_label);
+	pop_loop_labels(old_break, old_cont);
+}
+
 static void gen_for(struct ast_node *node)
 {
 	int lbl = label_count++;
@@ -856,6 +903,7 @@ static void gen_statement(struct ast_node *node)
 	case NODE_IF:			gen_if(node);			break;
 	case NODE_WHILE:		gen_while(node);		break;
 	case NODE_FOR:			gen_for(node);			break;
+	case NODE_SWITCH:		gen_switch(node);		break;
 	case NODE_BREAK:	emit("\tjmp %s", loop_break_label); break;
 	case NODE_CONTINUE:	emit("\tjmp %s", loop_cont_label);  break;
 	case NODE_ASSIGN:
@@ -922,6 +970,8 @@ static int count_stack_bytes(struct ast_node *node)
 			bytes += 8 - (bytes % 8);
 		return bytes;
 	}
+	if (node->type == NODE_SWITCH)
+		total += 8;
 	for (i = 0; i < node->child_count; i++)
 		total += count_stack_bytes(node->children[i]);
 	return total;

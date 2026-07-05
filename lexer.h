@@ -58,6 +58,9 @@ enum token_type {
 	TOKEN_LSHIFT,
 	TOKEN_RSHIFT,
 	TOKEN_PERCENT,
+	TOKEN_SWITCH,
+	TOKEN_CASE,
+	TOKEN_DEFAULT,
 };
 
 /* a tokens type and the actual text it came from */

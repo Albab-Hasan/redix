@@ -71,6 +71,9 @@ const char *token_type_name(enum token_type type)
 	case TOKEN_LSHIFT:		return "TOKEN_LSHIFT";
 	case TOKEN_RSHIFT:		return "TOKEN_RSHIFT";
 	case TOKEN_PERCENT:		return "TOKEN_PERCENT";
+	case TOKEN_SWITCH:		return "TOKEN_SWITCH";
+	case TOKEN_CASE:		return "TOKEN_CASE";
+	case TOKEN_DEFAULT:		return "TOKEN_DEFAULT";
 	}
 	return "UNKNOWN";
 }
@@ -92,6 +95,9 @@ static const struct {
 	{ "char",     TOKEN_CHAR },
 	{ "sizeof",   TOKEN_SIZEOF },
 	{ "struct",   TOKEN_STRUCT },
+	{ "switch",   TOKEN_SWITCH },
+	{ "case",     TOKEN_CASE },
+	{ "default",  TOKEN_DEFAULT },
 };
 
 #define NKEYWORDS (sizeof(keywords) / sizeof(keywords[0]))

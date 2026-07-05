@@ -27,6 +27,7 @@ code generation. Currently it supports:
 - `char` type: declarations, assignments, arithmetic, arrays `char a[N]`, pointer `char *p`, function parameters
 - `sizeof(type)`: `sizeof(int)` → 4, `sizeof(char)` → 1, `sizeof(int *)` / `sizeof(char *)` → 8
 - structs: `struct name { fields; }` definitions, local struct variables, member access and assignment via `.`, struct pointer declarations `struct T *p`, member access and assignment via `->`, struct pointer function parameters
+- `switch`/`case`/`default`: integer switch with fallthrough, `break` exits the switch
 - `//` line comments and `/* */` block comments
 
 ## Building
