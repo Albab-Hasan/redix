@@ -485,6 +485,20 @@ static void gen_binary(struct ast_node *node)
 		gen_logical(op); /* && or || */
 }
 
+static void emit_load(int off, int is_ptr, int esz)
+{
+	if (is_ptr)        emit("\tmovq %d(%%rbp), %%rax", off);
+	else if (esz == 1) emit("\tmovsbl %d(%%rbp), %%eax", off);
+	else               emit("\tmovl %d(%%rbp), %%eax", off);
+}
+
+static void emit_store(int off, int is_ptr, int esz)
+{
+	if (is_ptr)        emit("\tmovq %%rax, %d(%%rbp)", off);
+	else if (esz == 1) emit("\tmovb %%al, %d(%%rbp)", off);
+	else               emit("\tmovl %%eax, %d(%%rbp)", off);
+}
+
 static void gen_var(struct ast_node *node)
 {
 	struct var_entry *v;
@@ -496,12 +510,8 @@ static void gen_var(struct ast_node *node)
 	v = lookup_var(node->value);
 	if (v->is_array)
 		emit("\tleaq %d(%%rbp), %%rax", v->offset);
-	else if (v->is_ptr)
-		emit("\tmovq %d(%%rbp), %%rax", v->offset);
-	else if (v->elem_size == 1)
-		emit("\tmovsbl %d(%%rbp), %%eax", v->offset);
 	else
-		emit("\tmovl %d(%%rbp), %%eax", v->offset);
+		emit_load(v->offset, v->is_ptr, v->elem_size);
 }
 
 static void gen_assign(struct ast_node *node)
@@ -514,12 +524,7 @@ static void gen_assign(struct ast_node *node)
 		return;
 	}
 	v = lookup_var(node->value);
-	if (v->is_ptr)
-		emit("\tmovq %%rax, %d(%%rbp)", v->offset);
-	else if (v->elem_size == 1)
-		emit("\tmovb %%al, %d(%%rbp)", v->offset);
-	else
-		emit("\tmovl %%eax, %d(%%rbp)", v->offset);
+	emit_store(v->offset, v->is_ptr, v->elem_size);
 }
 
 static void gen_addr_of(struct ast_node *node)
@@ -618,19 +623,13 @@ static void gen_inc_dec(struct ast_node *node, int delta, int post)
 	v = lookup_var(node->value);
 	off = v->offset;
 	esz = v->elem_size;
-	if (post) {
-		if (v->is_ptr)     emit("\tmovq %d(%%rbp), %%rax", off);
-		else if (esz == 1) emit("\tmovsbl %d(%%rbp), %%eax", off);
-		else               emit("\tmovl %d(%%rbp), %%eax", off);
-	}
+	if (post)
+		emit_load(off, v->is_ptr, esz);
 	if (v->is_ptr)         emit("\t%sq $%d, %d(%%rbp)", op, esz, off);
 	else if (esz == 1)     emit("\t%sb $1, %d(%%rbp)", op, off);
 	else                   emit("\t%sl $1, %d(%%rbp)", op, off);
-	if (!post) {
-		if (v->is_ptr)     emit("\tmovq %d(%%rbp), %%rax", off);
-		else if (esz == 1) emit("\tmovsbl %d(%%rbp), %%eax", off);
-		else               emit("\tmovl %d(%%rbp), %%eax", off);
-	}
+	if (!post)
+		emit_load(off, v->is_ptr, esz);
 }
 
 static void gen_call(struct ast_node *node)
