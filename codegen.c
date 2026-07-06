@@ -811,6 +811,31 @@ static void gen_while(struct ast_node *node)
 	pop_loop_labels(old_break, old_cont);
 }
 
+static void gen_do_while(struct ast_node *node)
+{
+	int lbl = label_count++;
+	char old_break[64];
+	char old_cont[64];
+	char start_label[64];
+	char cont_label[64];
+	char end_label[64];
+
+	sprintf(start_label, ".Ldo_start%d", lbl);
+	sprintf(cont_label, ".Ldo_cont%d", lbl);
+	sprintf(end_label, ".Ldo_end%d", lbl);
+	push_loop_labels(old_break, old_cont, end_label, cont_label);
+
+	emit("%s:", start_label);
+	gen_statement(node->children[0]);
+	emit("%s:", cont_label);
+	gen_expression(node->children[1]);
+	emit("\tcmpl $0, %%eax");
+	emit("\tjne %s", start_label);
+	emit("%s:", end_label);
+
+	pop_loop_labels(old_break, old_cont);
+}
+
 static void gen_switch(struct ast_node *node)
 {
 	int lbl = label_count++;
@@ -902,6 +927,7 @@ static void gen_statement(struct ast_node *node)
 	case NODE_IF:			gen_if(node);			break;
 	case NODE_WHILE:		gen_while(node);		break;
 	case NODE_FOR:			gen_for(node);			break;
+	case NODE_DO_WHILE:		gen_do_while(node);		break;
 	case NODE_SWITCH:		gen_switch(node);		break;
 	case NODE_BREAK:	emit("\tjmp %s", loop_break_label); break;
 	case NODE_CONTINUE:	emit("\tjmp %s", loop_cont_label);  break;

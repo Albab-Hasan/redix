@@ -575,6 +575,21 @@ static struct ast_node *parse_switch(void)
 	return node;
 }
 
+static struct ast_node *parse_do_while(void)
+{
+	struct ast_node *node;
+
+	position++; /* consume 'do' */
+	node = make_node(NODE_DO_WHILE, NULL);
+	add_child(node, parse_statement());  /* body */
+	expect(TOKEN_WHILE);
+	expect(TOKEN_LPAREN);
+	add_child(node, parse_expression()); /* condition */
+	expect(TOKEN_RPAREN);
+	expect(TOKEN_SEMICOLON);
+	return node;
+}
+
 static struct ast_node *parse_local_struct_decl(void)
 {
 	struct token *tname;
@@ -637,6 +652,7 @@ static struct ast_node *parse_statement(void)
 	case TOKEN_FOR:		return parse_for();
 	case TOKEN_BREAK:	return parse_simple_keyword(NODE_BREAK);
 	case TOKEN_CONTINUE:	return parse_simple_keyword(NODE_CONTINUE);
+	case TOKEN_DO:		return parse_do_while();
 	case TOKEN_SWITCH:	return parse_switch();
 	default:
 		/* expression statement like assignments */

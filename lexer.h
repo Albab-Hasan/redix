@@ -61,6 +61,7 @@ enum token_type {
 	TOKEN_SWITCH,
 	TOKEN_CASE,
 	TOKEN_DEFAULT,
+	TOKEN_DO,
 };
 
 /* a tokens type and the actual text it came from */

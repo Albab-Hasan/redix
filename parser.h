@@ -46,6 +46,7 @@ enum node_type {
 	NODE_SWITCH,
 	NODE_CASE,
 	NODE_DEFAULT,
+	NODE_DO_WHILE,
 };
 
 /* a node in the abstrct syntax tree that can have child nodes */

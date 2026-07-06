@@ -28,6 +28,7 @@ code generation. Currently it supports:
 - `sizeof(type)`: `sizeof(int)` → 4, `sizeof(char)` → 1, `sizeof(int *)` / `sizeof(char *)` → 8
 - structs: `struct name { fields; }` definitions, local struct variables, member access and assignment via `.`, struct pointer declarations `struct T *p`, member access and assignment via `->`, struct pointer function parameters
 - `switch`/`case`/`default`: integer switch with fallthrough, `break` exits the switch
+- `do`/`while` loops: body runs at least once, `break` and `continue` work as expected
 - `//` line comments and `/* */` block comments
 
 ## Building
