@@ -24,8 +24,15 @@ static struct var_entry {
 static int var_count;
 static int stack_offset;
 
+/* globals get the same treatment as var_map so pointer and array
+ * globals remember what they point at */
 #define MAX_GLOBALS 64
-static char *global_vars[MAX_GLOBALS];
+static struct glob_entry {
+	char *name;
+	int is_ptr;
+	int is_array;
+	int elem_size; /* 1 for char 4 for int */
+} global_map[MAX_GLOBALS];
 static int global_count;
 
 #define MAX_STRINGS 64
@@ -57,14 +64,30 @@ static int lookup_struct(const char *name)
 	return -1;
 }
 
-static int is_global(const char *name)
+/* like lookup_var but returns NULL instead of dying since most names are locals */
+static struct glob_entry *lookup_global(const char *name)
 {
 	int i;
 
 	for (i = 0; i < global_count; i++)
-		if (strcmp(global_vars[i], name) == 0)
-			return 1;
-	return 0;
+		if (strcmp(global_map[i].name, name) == 0)
+			return &global_map[i];
+	return NULL;
+}
+
+static int is_global(const char *name)
+{
+	return lookup_global(name) != NULL;
+}
+
+static void declare_global(const char *name, int is_ptr, int is_array,
+		int elem_size)
+{
+	global_map[global_count].name = strdup(name);
+	global_map[global_count].is_ptr = is_ptr;
+	global_map[global_count].is_array = is_array;
+	global_map[global_count].elem_size = elem_size;
+	global_count++;
 }
 
 /* single scan returning pointer to the whole entry so callers read all fields at once */
@@ -402,20 +425,23 @@ static void gen_bitwise(const char *op)
 static int expr_ptr_scale(struct ast_node *node)
 {
 	struct var_entry *v;
+	struct glob_entry *g;
 	int l;
 	int r;
 
 	switch (node->type) {
 	case NODE_VAR:
-		if (is_global(node->value))
-			return 0;
+		g = lookup_global(node->value);
+		if (g)
+			return g->is_ptr ? g->elem_size : 0;
 		v = lookup_var(node->value);
 		if (!v->is_ptr)
 			return 0;
 		return v->elem_size;
 	case NODE_ADDR_OF:
-		if (is_global(node->value))
-			return 4;
+		g = lookup_global(node->value);
+		if (g)
+			return g->elem_size;
 		return lookup_var(node->value)->elem_size;
 	case NODE_BINARY:
 		if (node->value[1] != '\0')
@@ -502,9 +528,16 @@ static void emit_store(int off, int is_ptr, int esz)
 static void gen_var(struct ast_node *node)
 {
 	struct var_entry *v;
+	struct glob_entry *g;
 
-	if (is_global(node->value)) {
-		emit("\tmovl %s(%%rip), %%eax", node->value);
+	g = lookup_global(node->value);
+	if (g) {
+		if (g->is_array)
+			emit("\tleaq %s(%%rip), %%rax", node->value);
+		else if (g->is_ptr)
+			emit("\tmovq %s(%%rip), %%rax", node->value);
+		else
+			emit("\tmovl %s(%%rip), %%eax", node->value);
 		return;
 	}
 	v = lookup_var(node->value);
@@ -517,10 +550,15 @@ static void gen_var(struct ast_node *node)
 static void gen_assign(struct ast_node *node)
 {
 	struct var_entry *v;
+	struct glob_entry *g;
 
 	gen_expression(node->children[0]);
-	if (is_global(node->value)) {
-		emit("\tmovl %%eax, %s(%%rip)", node->value);
+	g = lookup_global(node->value);
+	if (g) {
+		if (g->is_ptr && !g->is_array)
+			emit("\tmovq %%rax, %s(%%rip)", node->value);
+		else
+			emit("\tmovl %%eax, %s(%%rip)", node->value);
 		return;
 	}
 	v = lookup_var(node->value);
@@ -540,12 +578,17 @@ static void gen_addr_of(struct ast_node *node)
 static int expr_deref_size(struct ast_node *node)
 {
 	struct var_entry *v;
+	struct glob_entry *g;
 	int scale;
 
 	switch (node->type) {
 	case NODE_VAR:
-		if (is_global(node->value))
+		g = lookup_global(node->value);
+		if (g) {
+			if (g->is_ptr)
+				return g->elem_size;
 			return 4;
+		}
 		v = lookup_var(node->value);
 		if (v->is_ptr)
 			return v->elem_size;
@@ -607,17 +650,28 @@ static void gen_char_ptr_declaration(struct ast_node *node)
 static void gen_inc_dec(struct ast_node *node, int delta, int post)
 {
 	struct var_entry *v;
+	struct glob_entry *g;
 	const char *op;
 	int off;
 	int esz;
 
 	op = (delta > 0) ? "add" : "sub";
-	if (is_global(node->value)) {
-		if (post)
-			emit("\tmovl %s(%%rip), %%eax", node->value);
-		emit("\t%sl $1, %s(%%rip)", op, node->value);
-		if (!post)
-			emit("\tmovl %s(%%rip), %%eax", node->value);
+	g = lookup_global(node->value);
+	if (g) {
+		if (g->is_ptr && !g->is_array) {
+			/* pointer steps by element size not 1 */
+			if (post)
+				emit("\tmovq %s(%%rip), %%rax", node->value);
+			emit("\t%sq $%d, %s(%%rip)", op, g->elem_size, node->value);
+			if (!post)
+				emit("\tmovq %s(%%rip), %%rax", node->value);
+		} else {
+			if (post)
+				emit("\tmovl %s(%%rip), %%eax", node->value);
+			emit("\t%sl $1, %s(%%rip)", op, node->value);
+			if (!post)
+				emit("\tmovl %s(%%rip), %%eax", node->value);
+		}
 		return;
 	}
 	v = lookup_var(node->value);
@@ -1080,14 +1134,43 @@ static void gen_function(struct ast_node *node)
 	emit("\tret");
 }
 
+static int is_global_node(enum node_type t)
+{
+	return t == NODE_GLOBAL || t == NODE_GLOBAL_PTR
+			|| t == NODE_GLOBAL_CHAR_PTR
+			|| t == NODE_GLOBAL_ARRAY
+			|| t == NODE_GLOBAL_CHAR_ARRAY;
+}
+
 static void gen_global(struct ast_node *node)
 {
-	int val = node->child_count > 0 ? atoi(node->children[0]->value) : 0;
+	int val;
+	int bytes;
 
 	emit("\t.globl %s", node->value);
-	emit("\t.align 4");
-	emit("%s:", node->value);
-	emit("\t.long %d", val);
+	switch (node->type) {
+	case NODE_GLOBAL:
+		val = node->child_count > 0 ? atoi(node->children[0]->value) : 0;
+		emit("\t.align 4");
+		emit("%s:", node->value);
+		emit("\t.long %d", val);
+		break;
+	case NODE_GLOBAL_PTR:
+	case NODE_GLOBAL_CHAR_PTR:
+		emit("\t.align 8");
+		emit("%s:", node->value);
+		emit("\t.quad 0");
+		break;
+	default:
+		/* arrays reserve n times elem size zeroed bytes */
+		bytes = atoi(node->children[0]->value);
+		if (node->type == NODE_GLOBAL_ARRAY)
+			bytes = bytes * 4;
+		emit("\t.align 8");
+		emit("%s:", node->value);
+		emit("\t.zero %d", bytes);
+		break;
+	}
 }
 
 static void gen_program(struct ast_node *node)
@@ -1101,10 +1184,27 @@ static void gen_program(struct ast_node *node)
 		if (node->children[i]->type == NODE_STRUCT_DEF)
 			gen_struct_def(node->children[i]);
 
-	for (i = 0; i < node->child_count; i++)
-		if (node->children[i]->type == NODE_GLOBAL)
-			global_vars[global_count++] =
-				strdup(node->children[i]->value);
+	for (i = 0; i < node->child_count; i++) {
+		switch (node->children[i]->type) {
+		case NODE_GLOBAL:
+			declare_global(node->children[i]->value, 0, 0, 4);
+			break;
+		case NODE_GLOBAL_PTR:
+			declare_global(node->children[i]->value, 1, 0, 4);
+			break;
+		case NODE_GLOBAL_CHAR_PTR:
+			declare_global(node->children[i]->value, 1, 0, 1);
+			break;
+		case NODE_GLOBAL_ARRAY:
+			declare_global(node->children[i]->value, 1, 1, 4);
+			break;
+		case NODE_GLOBAL_CHAR_ARRAY:
+			declare_global(node->children[i]->value, 1, 1, 1);
+			break;
+		default:
+			break;
+		}
+	}
 
 	if (string_count > 0) {
 		emit("\t.section .rodata");
@@ -1115,7 +1215,7 @@ static void gen_program(struct ast_node *node)
 	}
 
 	for (i = 0; i < node->child_count; i++) {
-		if (node->children[i]->type == NODE_GLOBAL) {
+		if (is_global_node(node->children[i]->type)) {
 			if (!has_globals) {
 				emit("\t.data");
 				has_globals = 1;

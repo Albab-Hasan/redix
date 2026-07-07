@@ -717,14 +717,40 @@ static struct ast_node *parse_function(void)
 	return node;
 }
 
-/* global variable declaration: int/char name [= number]; */
+/* global variable declaration: int/char [*] name [= number]; or int/char name[N]; */
 static struct ast_node *parse_global(void)
 {
 	struct token *name;
+	struct token *size_tok;
 	struct ast_node *node;
+	int is_char;
+	int is_ptr;
 
+	is_char = (current()->type == TOKEN_CHAR);
 	position++; /* consume int or char */
+	is_ptr = 0;
+	if (current()->type == TOKEN_STAR) {
+		is_ptr = 1;
+		position++;
+	}
 	name = expect(TOKEN_IDENTIFIER);
+	if (!is_ptr && current()->type == TOKEN_LBRACKET) {
+		position++;
+		size_tok = expect(TOKEN_NUMBER);
+		expect(TOKEN_RBRACKET);
+		expect(TOKEN_SEMICOLON);
+		node = make_node(is_char ? NODE_GLOBAL_CHAR_ARRAY : NODE_GLOBAL_ARRAY,
+				name->value);
+		add_child(node, make_node(NODE_NUMBER, size_tok->value));
+		return node;
+	}
+	if (is_ptr) {
+		/* global pointers start out null no initializer allowed */
+		node = make_node(is_char ? NODE_GLOBAL_CHAR_PTR : NODE_GLOBAL_PTR,
+				name->value);
+		expect(TOKEN_SEMICOLON);
+		return node;
+	}
 	node = make_node(NODE_GLOBAL, name->value);
 	if (current()->type == TOKEN_ASSIGN) {
 		position++;

@@ -47,6 +47,10 @@ enum node_type {
 	NODE_CASE,
 	NODE_DEFAULT,
 	NODE_DO_WHILE,
+	NODE_GLOBAL_PTR,
+	NODE_GLOBAL_CHAR_PTR,
+	NODE_GLOBAL_ARRAY,
+	NODE_GLOBAL_CHAR_ARRAY,
 };
 
 /* a node in the abstrct syntax tree that can have child nodes */
