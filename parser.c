@@ -45,6 +45,30 @@ static void add_child(struct ast_node *parent, struct ast_node *child)
 	parent->children[parent->child_count - 1] = child;
 }
 
+/* enum constants get folded to plain numbers at parse time like sizeof
+ * so codegen never sees them */
+struct enum_entry {
+	char *name;
+	int value;
+};
+
+#define MAX_ENUMS 64
+
+static struct enum_entry enum_map[MAX_ENUMS];
+static int enum_count;
+
+/* find an enum constant by name returns entry or NULL */
+static struct enum_entry *lookup_enum(const char *name)
+{
+	int i;
+
+	for (i = 0; i < enum_count; i++) {
+		if (strcmp(enum_map[i].name, name) == 0)
+			return &enum_map[i];
+	}
+	return NULL;
+}
+
 static struct ast_node *parse_statement(void);
 static struct ast_node *parse_expression(void);
 
@@ -54,6 +78,8 @@ static struct ast_node *parse_primary(void)
 	struct token *tok;
 	struct ast_node *node;
 	struct ast_node *binary;
+	struct enum_entry *ent;
+	char buf[16];
 
 	if (current()->type == TOKEN_STRING_LITERAL) {
 		tok = &tokens[position++];
@@ -67,6 +93,11 @@ static struct ast_node *parse_primary(void)
 
 	if (current()->type == TOKEN_IDENTIFIER) {
 		tok = &tokens[position++];
+		ent = lookup_enum(tok->value);
+		if (ent) {
+			sprintf(buf, "%d", ent->value);
+			return make_node(NODE_NUMBER, buf);
+		}
 		if (current()->type == TOKEN_LPAREN) {
 			position++; /* consume ( */
 			node = make_node(NODE_CALL, tok->value);
@@ -543,6 +574,8 @@ static struct ast_node *parse_switch(void)
 	struct ast_node *node;
 	struct ast_node *arm;
 	struct token *val;
+	struct enum_entry *ent;
+	char buf[16];
 
 	position++; /* consume 'switch' */
 	node = make_node(NODE_SWITCH, NULL);
@@ -553,9 +586,22 @@ static struct ast_node *parse_switch(void)
 	while (current()->type != TOKEN_RBRACE) {
 		if (current()->type == TOKEN_CASE) {
 			position++;
-			val = expect(TOKEN_NUMBER);
+			/* case labels can be enum constants too */
+			if (current()->type == TOKEN_IDENTIFIER) {
+				ent = lookup_enum(current()->value);
+				if (!ent) {
+					fprintf(stderr, "parser: unknown enum constant '%s'\n",
+							current()->value);
+					exit(1);
+				}
+				position++;
+				sprintf(buf, "%d", ent->value);
+				arm = make_node(NODE_CASE, buf);
+			} else {
+				val = expect(TOKEN_NUMBER);
+				arm = make_node(NODE_CASE, val->value);
+			}
 			expect(TOKEN_COLON);
-			arm = make_node(NODE_CASE, val->value);
 		} else if (current()->type == TOKEN_DEFAULT) {
 			position++;
 			expect(TOKEN_COLON);
@@ -634,6 +680,39 @@ static struct ast_node *parse_struct_def(void)
 	expect(TOKEN_RBRACE);
 	expect(TOKEN_SEMICOLON);
 	return node;
+}
+
+/* enum [name] { A, B = 5, C }; constants count up from 0 or from the last = value
+ * nothing goes in the tree the constants just get remembered */
+static void parse_enum_def(void)
+{
+	struct token *name;
+	int value;
+
+	position++; /* consume 'enum' */
+	if (current()->type == TOKEN_IDENTIFIER)
+		position++; /* tag name allowed but unused */
+	expect(TOKEN_LBRACE);
+	value = 0;
+	while (current()->type != TOKEN_RBRACE) {
+		name = expect(TOKEN_IDENTIFIER);
+		if (current()->type == TOKEN_ASSIGN) {
+			position++;
+			value = atoi(expect(TOKEN_NUMBER)->value);
+		}
+		if (enum_count >= MAX_ENUMS) {
+			fprintf(stderr, "parser: too many enum constants\n");
+			exit(1);
+		}
+		enum_map[enum_count].name = strdup(name->value);
+		enum_map[enum_count].value = value;
+		enum_count++;
+		value++;
+		if (current()->type == TOKEN_COMMA)
+			position++;
+	}
+	expect(TOKEN_RBRACE);
+	expect(TOKEN_SEMICOLON);
 }
 
 /* parse a single statement */
@@ -772,11 +851,14 @@ struct ast_node *parse(struct token *toks, int count)
 	tokens = toks;
 	token_count = count;
 	position = 0;
+	enum_count = 0;
 
 	program = make_node(NODE_PROGRAM, NULL);
 	while (current()->type != TOKEN_EOF) {
 		if (current()->type == TOKEN_STRUCT)
 			add_child(program, parse_struct_def());
+		else if (current()->type == TOKEN_ENUM)
+			parse_enum_def();
 		/* peek: int/void/char NAME ( -> function, otherwise -> global */
 		else if (position + 2 < token_count
 				&& tokens[position + 2].type == TOKEN_LPAREN)

@@ -30,6 +30,7 @@ code generation. Currently it supports:
 - structs: `struct name { fields; }` definitions, local struct variables, member access and assignment via `.`, struct pointer declarations `struct T *p`, member access and assignment via `->`, struct pointer function parameters
 - `switch`/`case`/`default`: integer switch with fallthrough, `break` exits the switch
 - `do`/`while` loops: body runs at least once, `break` and `continue` work as expected
+- enums: `enum name { A, B = 5, C };` at file scope, constants fold to numbers at parse time, usable in expressions and as `case` labels
 - `//` line comments and `/* */` block comments
 
 ## Building
