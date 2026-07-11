@@ -31,6 +31,7 @@ code generation. Currently it supports:
 - `switch`/`case`/`default`: integer switch with fallthrough, `break` exits the switch
 - `do`/`while` loops: body runs at least once, `break` and `continue` work as expected
 - enums: `enum name { A, B = 5, C };` at file scope, constants fold to numbers at parse time, usable in expressions and as `case` labels
+- `#define NAME value`: object-like macros, expanded in the lexer, value can be any token sequence, macros can reference other macros, works as array sizes
 - `//` line comments and `/* */` block comments
 
 ## Building

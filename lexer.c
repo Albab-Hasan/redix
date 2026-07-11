@@ -4,7 +4,6 @@
 #include <ctype.h>
 #include "lexer.h"
 
-/* create a token and return it */
 static struct token make_token(enum token_type type, const char *value)
 {
 	struct token t;
@@ -119,7 +118,132 @@ static enum token_type lookup_keyword(const char *word)
 	return TOKEN_IDENTIFIER;
 }
 
-/* scan a number literal starting at *pos and append a TOKEN_NUMBER */
+/* object like macros from #define
+ * expansion happens here in the lexer so the parser never sees them */
+struct macro_entry {
+	char *name;
+	char *value;
+};
+
+#define MAX_MACROS 64
+#define MAX_EXPAND_DEPTH 32
+
+static struct macro_entry macro_map[MAX_MACROS];
+static int macro_count;
+static int expand_depth;
+
+static struct macro_entry *lookup_macro(const char *name)
+{
+	int i;
+
+	for (i = 0; i < macro_count; i++) {
+		if (strcmp(macro_map[i].name, name) == 0)
+			return &macro_map[i];
+	}
+	return NULL;
+}
+
+/* #define NAME value -- value is the rest of the line kept as raw text
+ * only object like macros no function like ones */
+static void scan_define(const char *source, int *pos)
+{
+	char directive[64];
+	int len;
+	int start;
+	int length;
+	char *name;
+	char *value;
+	struct macro_entry *ent;
+
+	(*pos)++;
+	while (source[*pos] == ' ' || source[*pos] == '\t')
+		(*pos)++;
+	len = 0;
+	while (isalpha(source[*pos]))
+		directive[len++] = source[(*pos)++];
+	directive[len] = '\0';
+	if (strcmp(directive, "define") != 0) {
+		fprintf(stderr, "redix: unknown directive '#%s'\n", directive);
+		exit(1);
+	}
+
+	while (source[*pos] == ' ' || source[*pos] == '\t')
+		(*pos)++;
+	start = *pos;
+	while (isalpha(source[*pos]) || isdigit(source[*pos])
+			|| source[*pos] == '_')
+		(*pos)++;
+	length = *pos - start;
+	name = malloc(length + 1);
+	memcpy(name, &source[start], length);
+	name[length] = '\0';
+
+	while (source[*pos] == ' ' || source[*pos] == '\t')
+		(*pos)++;
+	start = *pos;
+	while (source[*pos] != '\n' && source[*pos] != '\0')
+		(*pos)++;
+	length = *pos - start;
+	while (length > 0 && isspace(source[start + length - 1]))
+		length--;
+	value = malloc(length + 1);
+	memcpy(value, &source[start], length);
+	value[length] = '\0';
+
+	ent = lookup_macro(name);
+	if (ent) {
+		free(ent->value);
+		ent->value = value;
+		free(name);
+		return;
+	}
+	if (macro_count >= MAX_MACROS) {
+		fprintf(stderr, "redix: too many macros\n");
+		exit(1);
+	}
+	macro_map[macro_count].name = name;
+	macro_map[macro_count].value = value;
+	macro_count++;
+}
+
+/* if the token just scanned is a macro name drop it and splice in the
+ * macros tokens -- the value goes through the lexer again so macros
+ * can be built from other macros */
+static int expand_macro(struct token **tokens, int ntokens, int *capacity)
+{
+	struct macro_entry *ent;
+	struct token *sub;
+	int sub_count;
+	int i;
+
+	if ((*tokens)[ntokens - 1].type != TOKEN_IDENTIFIER)
+		return ntokens;
+	ent = lookup_macro((*tokens)[ntokens - 1].value);
+	if (!ent)
+		return ntokens;
+
+	if (expand_depth >= MAX_EXPAND_DEPTH) {
+		fprintf(stderr, "redix: macro expansion too deep\n");
+		exit(1);
+	}
+	expand_depth++;
+	sub = lexer_tokenize(ent->value, &sub_count);
+	expand_depth--;
+
+	while (ntokens + sub_count >= *capacity) {
+		*capacity *= 2;
+		*tokens = realloc(*tokens, sizeof(struct token) * *capacity);
+	}
+
+	/* the name token gets overwritten and the subs EOF left out
+	 * since an EOF in the middle would end the token stream early */
+	ntokens--;
+	for (i = 0; i < sub_count - 1; i++)
+		(*tokens)[ntokens++] = sub[i];
+	free(sub);
+	return ntokens;
+}
+
 static void scan_number(const char *source, int *pos,
 		struct token *tokens, int *ntokens)
 {
@@ -136,7 +260,6 @@ static void scan_number(const char *source, int *pos,
 	tokens[(*ntokens)++] = (struct token){ TOKEN_NUMBER, number };
 }
 
-/* scan an identifier or keyword starting at *pos */
 static void scan_identifier(const char *source, int *pos,
 		struct token *tokens, int *ntokens)
 {
@@ -185,7 +308,6 @@ struct token *lexer_tokenize(const char *source, int *count)
 
 	while (source[position] != '\0') {
 
-		/* skip whitespace */
 		if (isspace(source[position])) {
 			position++;
 			continue;
@@ -211,7 +333,6 @@ struct token *lexer_tokenize(const char *source, int *count)
 			continue;
 		}
 
-		/* grow the array if needed */
 		if (ntokens + 1 >= capacity) {
 			capacity *= 2;
 			tokens = realloc(tokens, sizeof(struct token) * capacity);
@@ -384,11 +505,15 @@ struct token *lexer_tokenize(const char *source, int *count)
 		case '"':
 			scan_string(source, &position, tokens, &ntokens);
 			break;
+		case '#':
+			scan_define(source, &position);
+			break;
 		default:
 			if (isdigit(c)) {
 				scan_number(source, &position, tokens, &ntokens);
 			} else if (isalpha(c) || c == '_') {
 				scan_identifier(source, &position, tokens, &ntokens);
+				ntokens = expand_macro(&tokens, ntokens, &capacity);
 			} else {
 				fprintf(stderr, "redix: unexpected character '%c'\n", c);
 				exit(1);
