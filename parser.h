@@ -3,7 +3,6 @@
 
 #include "lexer.h"
 
-/* types of nodes in the abstrct syntax tree */
 enum node_type {
 	NODE_PROGRAM,
 	NODE_FUNCTION,

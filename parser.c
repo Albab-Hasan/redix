@@ -8,13 +8,12 @@ static int position;
 static struct token *tokens;
 static int token_count;
 
-/* return the token at the current position */
 static struct token *current(void)
 {
 	return &tokens[position];
 }
 
-/* check that the current is a expected one and move past it */
+/* dies on a mismatch so parse functions never need an error path */
 static struct token *expect(enum token_type type)
 {
 	if (position >= token_count || current()->type != type) {
@@ -25,7 +24,6 @@ static struct token *expect(enum token_type type)
 	return &tokens[position++];
 }
 
-/* allocate a new ast node */
 static struct ast_node *make_node(enum node_type type, char *value)
 {
 	struct ast_node *node = malloc(sizeof(struct ast_node));
@@ -36,7 +34,6 @@ static struct ast_node *make_node(enum node_type type, char *value)
 	return node;
 }
 
-/* attach a child node to a parent */
 static void add_child(struct ast_node *parent, struct ast_node *child)
 {
 	parent->child_count++;
@@ -57,7 +54,6 @@ struct enum_entry {
 static struct enum_entry enum_map[MAX_ENUMS];
 static int enum_count;
 
-/* find an enum constant by name returns entry or NULL */
 static struct enum_entry *lookup_enum(const char *name)
 {
 	int i;
@@ -360,7 +356,6 @@ static struct ast_node *parse_ternary(void)
 	return cond;
 }
 
-/* assignment or regular expression */
 static struct ast_node *parse_expression(void)
 {
 	struct ast_node *left;
@@ -437,7 +432,6 @@ static struct ast_node *parse_expression(void)
 	return left;
 }
 
-/* parse a block { stmt* } into a compound node */
 static struct ast_node *parse_block(void)
 {
 	struct ast_node *node;
@@ -463,7 +457,8 @@ static struct ast_node *parse_return(void)
 	return node;
 }
 
-/* parse TYPE [*] name [= expr] or TYPE name[N] without consuming the trailing ; */
+/* TYPE [*] name [= expr] or TYPE name[N]
+ * the trailing ; stays unconsumed so the for loop init can reuse this */
 static struct ast_node *parse_declaration_inner(void)
 {
 	struct token *name;
@@ -715,7 +710,6 @@ static void parse_enum_def(void)
 	expect(TOKEN_SEMICOLON);
 }
 
-/* parse a single statement */
 static struct ast_node *parse_statement(void)
 {
 	struct ast_node *node;
@@ -843,7 +837,6 @@ static struct ast_node *parse_global(void)
 	return node;
 }
 
-/* entry point */
 struct ast_node *parse(struct token *toks, int count)
 {
 	struct ast_node *program;
@@ -869,7 +862,6 @@ struct ast_node *parse(struct token *toks, int count)
 	return program;
 }
 
-/* free the entire tree */
 void free_ast(struct ast_node *node)
 {
 	int i;

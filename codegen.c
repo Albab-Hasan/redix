@@ -174,7 +174,6 @@ static int declare_array(const char *name, int size, int elem_size)
 	return stack_offset;
 }
 
-/* emit a line of assembly */
 static void emit(const char *fmt, ...)
 {
 	va_list args;
@@ -705,7 +704,6 @@ static void gen_call(struct ast_node *node)
 	emit("\tcall %s", node->value);
 }
 
-/* cond ? a : b like if/else but the chosen branch lands in eax */
 static void gen_string(struct ast_node *node)
 {
 	int i;
@@ -716,6 +714,7 @@ static void gen_string(struct ast_node *node)
 	emit("\tleaq .LC%d(%%rip), %%rax", i);
 }
 
+/* cond ? a : b like if/else but the chosen branch lands in eax */
 static void gen_ternary(struct ast_node *node)
 {
 	int lbl = label_count++;
@@ -1092,7 +1091,8 @@ static void gen_function(struct ast_node *node)
 	emit("\tpushq %%rbp");
 	emit("\tmovq %%rsp, %%rbp");
 
-	/* reserve stack for params and locals aligned to 16 */
+	/* reserve stack for params and locals -- rounded up since the
+	 * abi wants rsp 16 byte aligned at call time */
 	num_locals = count_stack_bytes(body);
 	alloc_size = num_params * 8 + num_locals;
 	if (alloc_size > 0) {
@@ -1101,7 +1101,7 @@ static void gen_function(struct ast_node *node)
 		emit("\tsubq $%d, %%rsp", alloc_size);
 	}
 
-	/* copy params from argument registers onto the stack */
+	/* params get stack slots so they read and write like any other local */
 	for (i = 0; i < num_params && i < 6; i++) {
 		if (node->children[i]->type == NODE_STRUCT_PTR_DECL) {
 			offset = declare_struct_ptr_var(

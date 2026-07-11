@@ -1,7 +1,6 @@
 #ifndef LEXER_H
 #define LEXER_H
 
-/* every possible token type */
 enum token_type {
 	TOKEN_INT,
 	TOKEN_VOID,
@@ -65,7 +64,6 @@ enum token_type {
 	TOKEN_ENUM,
 };
 
-/* a tokens type and the actual text it came from */
 struct token {
 	enum token_type type;
 	char *value;

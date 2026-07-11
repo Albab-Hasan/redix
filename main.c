@@ -4,7 +4,6 @@
 #include "parser.h"
 #include "codegen.h"
 
-/* print the ast */
 void print_ast(struct ast_node *node, int depth)
 {
 	int i;
