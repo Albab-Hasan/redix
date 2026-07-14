@@ -69,8 +69,7 @@ struct token {
 	char *value;
 };
 
-/* takes source code string, returns array of tokens 
- * count is set to how many tokens were made */
+/* count gets set to how many tokens were made */
 struct token *lexer_tokenize(const char *source, int *count);
 
 /* for debugging this returns the name of a token type as a string */

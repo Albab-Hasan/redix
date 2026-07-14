@@ -62,7 +62,6 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
-	/* read entire source file into a string */
 	fseek(file, 0, SEEK_END);
 	length = ftell(file);
 	fseek(file, 0, SEEK_SET);

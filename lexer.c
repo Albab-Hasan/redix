@@ -105,8 +105,7 @@ static const struct {
 
 #define NKEYWORDS (sizeof(keywords) / sizeof(keywords[0]))
 
-/* match an identifier-shaped word against the keyword table
- * returns TOKEN_IDENTIFIER if no keyword matches */
+/* returns TOKEN_IDENTIFIER if no keyword matches */
 static enum token_type lookup_keyword(const char *word)
 {
 	size_t i;
@@ -313,14 +312,12 @@ struct token *lexer_tokenize(const char *source, int *count)
 			continue;
 		}
 
-		/* skip line comments */
 		if (source[position] == '/' && source[position + 1] == '/') {
 			while (source[position] != '\0' && source[position] != '\n')
 				position++;
 			continue;
 		}
 
-		/* skip block comments */
 		if (source[position] == '/' && source[position + 1] == '*') {
 			position += 2;
 			while (source[position] != '\0') {

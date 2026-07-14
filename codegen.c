@@ -10,7 +10,6 @@ static int label_count;
 static char loop_break_label[64];
 static char loop_cont_label[64];
 
-/* variable stack map tracks where each local lives on the stack */
 #define MAX_VARS 128
 static struct var_entry {
 	char *name;
@@ -103,7 +102,7 @@ static struct var_entry *lookup_var(const char *name)
 	return NULL;
 }
 
-/* add a new variable to the stack map -- all scalar/ptr vars use 8-byte slots */
+/* every scalar and ptr gets a full 8 byte slot so offsets never need alignment math */
 static int declare_var(const char *name, int is_ptr, int elem_size)
 {
 	stack_offset -= 8;
@@ -155,7 +154,7 @@ static int declare_struct_ptr_var(const char *name, const char *type_name)
 	return stack_offset;
 }
 
-/* allocate N*elem_size bytes on the stack padded to 8-byte boundary */
+/* padded to 8 so the slots placed after the array stay aligned */
 static int declare_array(const char *name, int size, int elem_size)
 {
 	int bytes = size * elem_size;
@@ -353,8 +352,7 @@ static void gen_arith(const char *op)
 	}
 }
 
-/* comparison ops -- ecx holds left eax holds right
- * we compare left - right and set al based on the result */
+/* comparison ops -- ecx holds left eax holds right */
 static void gen_compare(const char *op)
 {
 	emit("\tcmpl %%eax, %%ecx");
@@ -464,7 +462,7 @@ static void gen_ptr_arith(const char *op, int lscale, int rscale)
 {
 	if (op[0] == '+') {
 		if (lscale && !rscale) {
-			emit("\tmovslq %%eax, %%rax"); /* sign extend the int index */
+			emit("\tmovslq %%eax, %%rax"); /* index is 32 bit but address math is 64 bit */
 			emit("\timulq $%d, %%rax", lscale);
 		} else if (!lscale && rscale) {
 			emit("\tmovslq %%ecx, %%rcx");
@@ -507,7 +505,7 @@ static void gen_binary(struct ast_node *node)
 	else if (is_bitwise_op(op))
 		gen_bitwise(op);
 	else
-		gen_logical(op); /* && or || */
+		gen_logical(op);
 }
 
 static void emit_load(int off, int is_ptr, int esz)
@@ -693,7 +691,8 @@ static void gen_call(struct ast_node *node)
 	int i;
 	int nargs = node->child_count;
 
-	/* evaluate args left-to-right and push each onto the stack */
+	/* args go through the stack since evaluating a later arg could
+	 * itself be a call that clobbers the arg regs */
 	for (i = 0; i < nargs; i++) {
 		gen_expression(node->children[i]);
 		emit("\tpush %%rax");
@@ -1076,7 +1075,7 @@ static void gen_function(struct ast_node *node)
 	int elem_sz;
 	struct ast_node *body;
 
-	/* reset variable state per function */
+	/* stale locals from the previous function must not resolve here */
 	var_count = 0;
 	stack_offset = 0;
 	loop_break_label[0] = '\0';
@@ -1162,7 +1161,6 @@ static void gen_global(struct ast_node *node)
 		emit("\t.quad 0");
 		break;
 	default:
-		/* arrays reserve n times elem size zeroed bytes */
 		bytes = atoi(node->children[0]->value);
 		if (node->type == NODE_GLOBAL_ARRAY)
 			bytes = bytes * 4;

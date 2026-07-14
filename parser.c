@@ -68,7 +68,6 @@ static struct enum_entry *lookup_enum(const char *name)
 static struct ast_node *parse_statement(void);
 static struct ast_node *parse_expression(void);
 
-/* number variable function call or parenthesized expression */
 static struct ast_node *parse_primary(void)
 {
 	struct token *tok;
@@ -95,7 +94,7 @@ static struct ast_node *parse_primary(void)
 			return make_node(NODE_NUMBER, buf);
 		}
 		if (current()->type == TOKEN_LPAREN) {
-			position++; /* consume ( */
+			position++;
 			node = make_node(NODE_CALL, tok->value);
 			while (current()->type != TOKEN_RPAREN) {
 				add_child(node, parse_expression());
@@ -144,7 +143,7 @@ static struct ast_node *parse_primary(void)
 	}
 
 	if (current()->type == TOKEN_LPAREN) {
-		position++; /* consume ( */
+		position++;
 		node = parse_expression();
 		expect(TOKEN_RPAREN);
 		return node;
@@ -156,7 +155,6 @@ static struct ast_node *parse_primary(void)
 	return NULL;
 }
 
-/* unary operators - ~ ! & * */
 static struct ast_node *parse_unary(void)
 {
 	struct token *tok;
@@ -214,8 +212,8 @@ static struct ast_node *parse_unary(void)
 }
 
 /* generic left-associative binary parser
- * matchfn tells us which token types are operators at this level
- * next is the parser for the tighter precedence level below us */
+ * matchfn says which tokens are operators at this level
+ * next parses the tighter precedence level below */
 static struct ast_node *parse_binop(struct ast_node *(*next)(void),
 		int (*matchfn)(enum token_type))
 {
@@ -468,7 +466,7 @@ static struct ast_node *parse_declaration_inner(void)
 	int is_char;
 
 	is_char = (current()->type == TOKEN_CHAR);
-	position++; /* consume int or char */
+	position++;
 	is_ptr = 0;
 	if (current()->type == TOKEN_STAR) {
 		is_ptr = 1;
@@ -572,7 +570,7 @@ static struct ast_node *parse_switch(void)
 	struct enum_entry *ent;
 	char buf[16];
 
-	position++; /* consume 'switch' */
+	position++;
 	node = make_node(NODE_SWITCH, NULL);
 	expect(TOKEN_LPAREN);
 	add_child(node, parse_expression());
@@ -620,7 +618,7 @@ static struct ast_node *parse_do_while(void)
 {
 	struct ast_node *node;
 
-	position++; /* consume 'do' */
+	position++;
 	node = make_node(NODE_DO_WHILE, NULL);
 	add_child(node, parse_statement());  /* body */
 	expect(TOKEN_WHILE);
@@ -638,7 +636,7 @@ static struct ast_node *parse_local_struct_decl(void)
 	struct ast_node *node;
 	int is_ptr;
 
-	position++; /* consume 'struct' */
+	position++;
 	tname = expect(TOKEN_IDENTIFIER);
 	is_ptr = 0;
 	if (current()->type == TOKEN_STAR) {
@@ -659,7 +657,7 @@ static struct ast_node *parse_struct_def(void)
 	struct ast_node *node;
 	int is_char;
 
-	position++; /* consume 'struct' */
+	position++;
 	name = expect(TOKEN_IDENTIFIER);
 	node = make_node(NODE_STRUCT_DEF, name->value);
 	expect(TOKEN_LBRACE);
@@ -684,7 +682,7 @@ static void parse_enum_def(void)
 	struct token *name;
 	int value;
 
-	position++; /* consume 'enum' */
+	position++;
 	if (current()->type == TOKEN_IDENTIFIER)
 		position++; /* tag name allowed but unused */
 	expect(TOKEN_LBRACE);
@@ -744,7 +742,7 @@ static struct ast_node *parse_function(void)
 	int is_ptr_param;
 	int is_char_param;
 
-	/* return type int void or char for now we just consume it */
+	/* return type gets consumed and ignored since every value is int sized anyway */
 	if (current()->type == TOKEN_INT || current()->type == TOKEN_VOID
 			|| current()->type == TOKEN_CHAR)
 		position++;
@@ -766,7 +764,7 @@ static struct ast_node *parse_function(void)
 			add_child(node, param);
 		} else {
 			is_char_param = (current()->type == TOKEN_CHAR);
-			position++; /* consume int or char */
+			position++;
 			is_ptr_param = 0;
 			if (current()->type == TOKEN_STAR) {
 				is_ptr_param = 1;
@@ -800,7 +798,7 @@ static struct ast_node *parse_global(void)
 	int is_ptr;
 
 	is_char = (current()->type == TOKEN_CHAR);
-	position++; /* consume int or char */
+	position++;
 	is_ptr = 0;
 	if (current()->type == TOKEN_STAR) {
 		is_ptr = 1;

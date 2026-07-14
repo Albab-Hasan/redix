@@ -52,7 +52,6 @@ enum node_type {
 	NODE_GLOBAL_CHAR_ARRAY,
 };
 
-/* a node in the abstrct syntax tree that can have child nodes */
 struct ast_node {
 	enum node_type type;
 	char *value;
