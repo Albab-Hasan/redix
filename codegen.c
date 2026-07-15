@@ -30,7 +30,7 @@ static struct glob_entry {
 	char *name;
 	int is_ptr;
 	int is_array;
-	int elem_size; /* 1 for char 4 for int */
+	int elem_size;
 } global_map[MAX_GLOBALS];
 static int global_count;
 
@@ -417,8 +417,7 @@ static void gen_bitwise(const char *op)
 	}
 }
 
-/* returns the pointer scale for this expression (0 if not a pointer)
- * int* returns 4 char* returns 1 non-pointer returns 0 */
+/* 4 for int* 1 for char* 0 if not a pointer */
 static int expr_ptr_scale(struct ast_node *node)
 {
 	struct var_entry *v;
@@ -600,7 +599,7 @@ static void gen_deref(struct ast_node *node)
 {
 	int esz = expr_deref_size(node->children[0]);
 
-	gen_expression(node->children[0]); /* ptr in rax */
+	gen_expression(node->children[0]);
 	if (esz == 1)
 		emit("\tmovsbl (%%rax), %%eax");
 	else
@@ -611,7 +610,6 @@ static void gen_deref_assign(struct ast_node *node)
 {
 	int esz = expr_deref_size(node->children[0]);
 
-	/* child[0] = ptr expr, child[1] = value expr */
 	gen_expression(node->children[1]); /* value in eax */
 	emit("\tpush %%rax");
 	gen_expression(node->children[0]); /* ptr in rax */

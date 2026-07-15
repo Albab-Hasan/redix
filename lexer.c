@@ -79,7 +79,7 @@ const char *token_type_name(enum token_type type)
 	return "UNKNOWN";
 }
 
-/* keyword lookup table -- order does not matter */
+/* order does not matter just a linear scan */
 static const struct {
 	const char *word;
 	enum token_type type;

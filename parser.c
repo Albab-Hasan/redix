@@ -345,9 +345,9 @@ static struct ast_node *parse_ternary(void)
 		position++;
 		node = make_node(NODE_TERNARY, NULL);
 		add_child(node, cond);
-		add_child(node, parse_expression()); /* true branch */
+		add_child(node, parse_expression());
 		expect(TOKEN_COLON);
-		add_child(node, parse_ternary()); /* false branch */
+		add_child(node, parse_ternary());
 		return node;
 	}
 
@@ -422,7 +422,7 @@ static struct ast_node *parse_expression(void)
 		binary = make_node(NODE_BINARY, (char *)op);
 		add_child(binary, make_node(NODE_VAR, node->value));
 		free_ast(left);
-		add_child(binary, parse_expression()); /* right associative */
+		add_child(binary, parse_expression());
 		add_child(node, binary);
 		return node;
 	}
@@ -455,8 +455,7 @@ static struct ast_node *parse_return(void)
 	return node;
 }
 
-/* TYPE [*] name [= expr] or TYPE name[N]
- * the trailing ; stays unconsumed so the for loop init can reuse this */
+/* trailing ; stays unconsumed so the for loop init can reuse this */
 static struct ast_node *parse_declaration_inner(void)
 {
 	struct token *name;
@@ -509,12 +508,12 @@ static struct ast_node *parse_if(void)
 	position++;
 	node = make_node(NODE_IF, NULL);
 	expect(TOKEN_LPAREN);
-	add_child(node, parse_expression()); /* condition */
+	add_child(node, parse_expression());
 	expect(TOKEN_RPAREN);
-	add_child(node, parse_statement());  /* then */
+	add_child(node, parse_statement());
 	if (current()->type == TOKEN_ELSE) {
 		position++;
-		add_child(node, parse_statement()); /* else */
+		add_child(node, parse_statement());
 	}
 	return node;
 }
@@ -526,9 +525,9 @@ static struct ast_node *parse_while(void)
 	position++;
 	node = make_node(NODE_WHILE, NULL);
 	expect(TOKEN_LPAREN);
-	add_child(node, parse_expression()); /* condition */
+	add_child(node, parse_expression());
 	expect(TOKEN_RPAREN);
-	add_child(node, parse_statement());  /* body */
+	add_child(node, parse_statement());
 	return node;
 }
 
@@ -544,11 +543,11 @@ static struct ast_node *parse_for(void)
 	else
 		add_child(node, parse_expression());
 	expect(TOKEN_SEMICOLON);
-	add_child(node, parse_expression()); /* condition */
+	add_child(node, parse_expression());
 	expect(TOKEN_SEMICOLON);
-	add_child(node, parse_expression()); /* increment */
+	add_child(node, parse_expression());
 	expect(TOKEN_RPAREN);
-	add_child(node, parse_statement());  /* body */
+	add_child(node, parse_statement());
 	return node;
 }
 
@@ -579,7 +578,7 @@ static struct ast_node *parse_switch(void)
 	while (current()->type != TOKEN_RBRACE) {
 		if (current()->type == TOKEN_CASE) {
 			position++;
-			/* case labels can be enum constants too */
+			/* case takes a raw number token not parse_expression so enum names need their own lookup */
 			if (current()->type == TOKEN_IDENTIFIER) {
 				ent = lookup_enum(current()->value);
 				if (!ent) {
@@ -620,10 +619,10 @@ static struct ast_node *parse_do_while(void)
 
 	position++;
 	node = make_node(NODE_DO_WHILE, NULL);
-	add_child(node, parse_statement());  /* body */
+	add_child(node, parse_statement());
 	expect(TOKEN_WHILE);
 	expect(TOKEN_LPAREN);
-	add_child(node, parse_expression()); /* condition */
+	add_child(node, parse_expression());
 	expect(TOKEN_RPAREN);
 	expect(TOKEN_SEMICOLON);
 	return node;
@@ -675,8 +674,7 @@ static struct ast_node *parse_struct_def(void)
 	return node;
 }
 
-/* enum [name] { A, B = 5, C }; constants count up from 0 or from the last = value
- * nothing goes in the tree the constants just get remembered */
+/* nothing goes in the tree the constants just get remembered */
 static void parse_enum_def(void)
 {
 	struct token *name;
@@ -726,14 +724,12 @@ static struct ast_node *parse_statement(void)
 	case TOKEN_DO:		return parse_do_while();
 	case TOKEN_SWITCH:	return parse_switch();
 	default:
-		/* expression statement like assignments */
 		node = parse_expression();
 		expect(TOKEN_SEMICOLON);
 		return node;
 	}
 }
 
-/* parse a function -- params stored as NODE_DECLARATION/NODE_PTR_DECLARATION before body */
 static struct ast_node *parse_function(void)
 {
 	struct token *name;
@@ -788,7 +784,6 @@ static struct ast_node *parse_function(void)
 	return node;
 }
 
-/* global variable declaration: int/char [*] name [= number]; or int/char name[N]; */
 static struct ast_node *parse_global(void)
 {
 	struct token *name;

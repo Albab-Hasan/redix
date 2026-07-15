@@ -72,7 +72,7 @@ struct token {
 /* count gets set to how many tokens were made */
 struct token *lexer_tokenize(const char *source, int *count);
 
-/* for debugging this returns the name of a token type as a string */
+/* debugging only */
 const char *token_type_name(enum token_type type);
 
 #endif
