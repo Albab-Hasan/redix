@@ -73,7 +73,7 @@ int main(int argc, char **argv)
 	tokens = lexer_tokenize(source, &count);
 	free(source);
 
-	/* print tokens for debugging */
+	/* debugging only */
 	for (i = 0; i < count; i++)
 		printf("%-18s %s\n", token_type_name(tokens[i].type), tokens[i].value);
 

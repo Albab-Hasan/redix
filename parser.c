@@ -211,8 +211,7 @@ static struct ast_node *parse_unary(void)
 	return parse_primary();
 }
 
-/* generic left-associative binary parser
- * matchfn says which tokens are operators at this level
+/* matchfn says which tokens are operators at this level
  * next parses the tighter precedence level below */
 static struct ast_node *parse_binop(struct ast_node *(*next)(void),
 		int (*matchfn)(enum token_type))
@@ -333,7 +332,7 @@ static struct ast_node *parse_logical_or(void)
 	return parse_binop(parse_logical_and, is_or);
 }
 
-/* cond ? a : b false branch is right associative */
+/* false branch is right associative */
 static struct ast_node *parse_ternary(void)
 {
 	struct ast_node *cond;
@@ -369,7 +368,7 @@ static struct ast_node *parse_expression(void)
 	if (current()->type == TOKEN_ASSIGN) {
 		position++;
 		if (left->type == NODE_DEREF) {
-			/* *p = expr: extract ptr child before freeing the deref shell */
+			/* free_ast on the shell would take the ptr child with it so the frees are manual */
 			ptr_expr = left->children[0];
 			free(left->children);
 			free(left->value);
@@ -409,7 +408,7 @@ static struct ast_node *parse_expression(void)
 		return node;
 	}
 
-	/* desugar: x op= e  ->  x = x op e */
+	/* desugar x op= e into x = x op e */
 	op = NULL;
 	if      (current()->type == TOKEN_PLUS_ASSIGN)  op = "+";
 	else if (current()->type == TOKEN_MINUS_ASSIGN) op = "-";
@@ -845,7 +844,7 @@ struct ast_node *parse(struct token *toks, int count)
 			add_child(program, parse_struct_def());
 		else if (current()->type == TOKEN_ENUM)
 			parse_enum_def();
-		/* peek: int/void/char NAME ( -> function, otherwise -> global */
+		/* peek ahead -- int/void/char NAME ( means function otherwise global */
 		else if (position + 2 < token_count
 				&& tokens[position + 2].type == TOKEN_LPAREN)
 			add_child(program, parse_function());

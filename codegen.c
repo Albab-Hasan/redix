@@ -89,7 +89,6 @@ static void declare_global(const char *name, int is_ptr, int is_array,
 	global_count++;
 }
 
-/* single scan returning pointer to the whole entry so callers read all fields at once */
 static struct var_entry *lookup_var(const char *name)
 {
 	int i;
@@ -328,7 +327,7 @@ static void gen_unary(struct ast_node *node)
 	}
 }
 
-/* arithmetic ops -- ecx holds left eax holds right */
+/* ecx holds left eax holds right */
 static void gen_arith(const char *op)
 {
 	if (strcmp(op, "+") == 0) {
@@ -352,7 +351,7 @@ static void gen_arith(const char *op)
 	}
 }
 
-/* comparison ops -- ecx holds left eax holds right */
+/* ecx holds left eax holds right */
 static void gen_compare(const char *op)
 {
 	emit("\tcmpl %%eax, %%ecx");
@@ -365,7 +364,7 @@ static void gen_compare(const char *op)
 	else if (strcmp(op, "!=") == 0) emit("\tsetne %%al");
 }
 
-/* logical ops -- normalize both sides to 0 or 1 then bitwise and/or */
+/* anding raw values would get 2 && 4 wrong so both sides normalize to 0 or 1 first */
 static void gen_logical(const char *op)
 {
 	emit("\tcmpl $0, %%ecx");
@@ -399,7 +398,7 @@ static int is_bitwise_op(const char *op)
 		|| (op[0] == '>' && op[1] == '>');
 }
 
-/* ecx = left, eax = right (shift count for shifts) */
+/* ecx holds left eax holds right -- sal and sar want the count in cl */
 static void gen_bitwise(const char *op)
 {
 	if (op[0] == '&') {
@@ -455,8 +454,8 @@ static int expr_ptr_scale(struct ast_node *node)
 	}
 }
 
-/* pointer arithmetic -- rcx is left rax is right
- * scale the integer side by the element size before combining */
+/* rcx holds left rax holds right
+ * the integer side gets scaled by the element size before combining */
 static void gen_ptr_arith(const char *op, int lscale, int rscale)
 {
 	if (op[0] == '+') {
@@ -641,7 +640,7 @@ static void gen_char_ptr_declaration(struct ast_node *node)
 }
 
 /* delta is +1 or -1
- * post: load old value before mutating (postfix semantics) */
+ * post means the old value loads before the mutation */
 static void gen_inc_dec(struct ast_node *node, int delta, int post)
 {
 	struct var_entry *v;
@@ -711,7 +710,7 @@ static void gen_string(struct ast_node *node)
 	emit("\tleaq .LC%d(%%rip), %%rax", i);
 }
 
-/* cond ? a : b like if/else but the chosen branch lands in eax */
+/* like if/else but the chosen branch lands in eax */
 static void gen_ternary(struct ast_node *node)
 {
 	int lbl = label_count++;
@@ -947,7 +946,7 @@ static void gen_for(struct ast_node *node)
 	sprintf(end_label, ".Lfor_end%d", lbl);
 	push_loop_labels(old_break, old_cont, end_label, inc_label);
 
-	gen_statement(node->children[0]);		/* init: expr or declaration */
+	gen_statement(node->children[0]);		/* init either expr or declaration */
 	emit("%s:", cond_label);
 	gen_expression(node->children[1]);		/* condition */
 	emit("\tcmpl $0, %%eax");
@@ -1008,7 +1007,7 @@ static void gen_statement(struct ast_node *node)
 	}
 }
 
-/* count bytes needed for locals so the right amount of stack gets reserved */
+/* the body gets walked before codegen since the frame size must be known upfront */
 static int count_stack_bytes(struct ast_node *node)
 {
 	int i;
@@ -1088,8 +1087,7 @@ static void gen_function(struct ast_node *node)
 	emit("\tpushq %%rbp");
 	emit("\tmovq %%rsp, %%rbp");
 
-	/* reserve stack for params and locals -- rounded up since the
-	 * abi wants rsp 16 byte aligned at call time */
+	/* rounded up since the abi wants rsp 16 byte aligned at call time */
 	num_locals = count_stack_bytes(body);
 	alloc_size = num_params * 8 + num_locals;
 	if (alloc_size > 0) {

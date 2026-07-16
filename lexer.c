@@ -105,7 +105,6 @@ static const struct {
 
 #define NKEYWORDS (sizeof(keywords) / sizeof(keywords[0]))
 
-/* returns TOKEN_IDENTIFIER if no keyword matches */
 static enum token_type lookup_keyword(const char *word)
 {
 	size_t i;
@@ -117,8 +116,7 @@ static enum token_type lookup_keyword(const char *word)
 	return TOKEN_IDENTIFIER;
 }
 
-/* object like macros from #define
- * expansion happens here in the lexer so the parser never sees them */
+/* expansion happens at lex time so the parser never sees macros */
 struct macro_entry {
 	char *name;
 	char *value;
@@ -142,8 +140,7 @@ static struct macro_entry *lookup_macro(const char *name)
 	return NULL;
 }
 
-/* #define NAME value -- value is the rest of the line kept as raw text
- * only object like macros no function like ones */
+/* only object like macros -- the value stays raw text and gets relexed at expansion */
 static void scan_define(const char *source, int *pos)
 {
 	char directive[64];
@@ -205,9 +202,7 @@ static void scan_define(const char *source, int *pos)
 	macro_count++;
 }
 
-/* if the token just scanned is a macro name drop it and splice in the
- * macros tokens -- the value goes through the lexer again so macros
- * can be built from other macros */
+/* the value goes through the lexer again so macros can be built from other macros */
 static int expand_macro(struct token **tokens, int ntokens, int *capacity)
 {
 	struct macro_entry *ent;
@@ -234,8 +229,8 @@ static int expand_macro(struct token **tokens, int ntokens, int *capacity)
 		*tokens = realloc(*tokens, sizeof(struct token) * *capacity);
 	}
 
-	/* the name token gets overwritten and the subs EOF left out
-	 * since an EOF in the middle would end the token stream early */
+	/* the subs EOF stays out since an EOF in the middle
+	 * would end the token stream early */
 	ntokens--;
 	for (i = 0; i < sub_count - 1; i++)
 		(*tokens)[ntokens++] = sub[i];
