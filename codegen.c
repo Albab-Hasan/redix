@@ -40,9 +40,10 @@ static int string_count;
 
 #define MAX_FIELDS 16
 #define MAX_STRUCTS 16
-static struct {
+static struct field_entry {
 	char name[64];
 	int offset;
+	int size;   /* 1 for char 4 for int */
 } struct_flds[MAX_STRUCTS][MAX_FIELDS];
 static struct {
 	char name[64];
@@ -61,6 +62,19 @@ static int lookup_struct(const char *name)
 	fprintf(stderr, "codegen: unknown struct type '%s'\n", name);
 	exit(1);
 	return -1;
+}
+
+static struct field_entry *lookup_field(int idx, const char *name)
+{
+	int i;
+
+	for (i = 0; i < struct_types[idx].field_count; i++)
+		if (strcmp(struct_flds[idx][i].name, name) == 0)
+			return &struct_flds[idx][i];
+	fprintf(stderr, "codegen: struct '%s' has no field '%s'\n",
+			struct_types[idx].name, name);
+	exit(1);
+	return NULL;
 }
 
 /* like lookup_var but returns NULL instead of dying since most names are locals */
@@ -205,18 +219,31 @@ static void gen_struct_def(struct ast_node *node)
 	int i;
 	int idx;
 	int off;
+	int fsz;
+	int max_align;
 
 	idx = struct_type_count++;
 	strncpy(struct_types[idx].name, node->value, 63);
 	struct_types[idx].name[63] = '\0';
 	struct_types[idx].field_count = node->child_count;
 	off = 0;
+	max_align = 1;
 	for (i = 0; i < node->child_count; i++) {
+		fsz = node->children[i]->type == NODE_CHAR_DECLARATION ? 1 : 4;
+		/* char fields pack tight ints align to 4 so loads never straddle */
+		if (off % fsz != 0)
+			off += fsz - (off % fsz);
 		strncpy(struct_flds[idx][i].name, node->children[i]->value, 63);
 		struct_flds[idx][i].name[63] = '\0';
 		struct_flds[idx][i].offset = off;
-		off += 4;
+		struct_flds[idx][i].size = fsz;
+		off += fsz;
+		if (fsz > max_align)
+			max_align = fsz;
 	}
+	/* total rounds up to the widest field so back to back structs would keep their fields aligned */
+	if (off % max_align != 0)
+		off += max_align - (off % max_align);
 	struct_types[idx].total_size = off;
 }
 
@@ -228,34 +255,32 @@ static void gen_struct_decl(struct ast_node *node)
 static void gen_member(struct ast_node *node)
 {
 	struct var_entry *v;
-	int idx;
-	int i;
+	struct field_entry *f;
 	int combined;
 
 	v = lookup_var(node->children[0]->value);
-	idx = lookup_struct(v->struct_type);
-	for (i = 0; i < struct_types[idx].field_count; i++)
-		if (strcmp(struct_flds[idx][i].name, node->value) == 0)
-			break;
-	combined = v->offset + struct_flds[idx][i].offset;
-	emit("\tmovl %d(%%rbp), %%eax", combined);
+	f = lookup_field(lookup_struct(v->struct_type), node->value);
+	combined = v->offset + f->offset;
+	if (f->size == 1)
+		emit("\tmovsbl %d(%%rbp), %%eax", combined);
+	else
+		emit("\tmovl %d(%%rbp), %%eax", combined);
 }
 
 static void gen_member_assign(struct ast_node *node)
 {
 	struct var_entry *v;
-	int idx;
-	int i;
+	struct field_entry *f;
 	int combined;
 
 	v = lookup_var(node->children[0]->value);
-	idx = lookup_struct(v->struct_type);
-	for (i = 0; i < struct_types[idx].field_count; i++)
-		if (strcmp(struct_flds[idx][i].name, node->value) == 0)
-			break;
-	combined = v->offset + struct_flds[idx][i].offset;
+	f = lookup_field(lookup_struct(v->struct_type), node->value);
+	combined = v->offset + f->offset;
 	gen_expression(node->children[1]);
-	emit("\tmovl %%eax, %d(%%rbp)", combined);
+	if (f->size == 1)
+		emit("\tmovb %%al, %d(%%rbp)", combined);
+	else
+		emit("\tmovl %%eax, %d(%%rbp)", combined);
 }
 
 static void gen_struct_ptr_decl(struct ast_node *node)
@@ -266,42 +291,36 @@ static void gen_struct_ptr_decl(struct ast_node *node)
 static void gen_ptr_member(struct ast_node *node)
 {
 	struct var_entry *v;
-	int idx;
-	int i;
-	int foff;
+	struct field_entry *f;
 
 	v = lookup_var(node->children[0]->value);
-	idx = lookup_struct(v->struct_type);
-	for (i = 0; i < struct_types[idx].field_count; i++)
-		if (strcmp(struct_flds[idx][i].name, node->value) == 0)
-			break;
-	foff = struct_flds[idx][i].offset;
+	f = lookup_field(lookup_struct(v->struct_type), node->value);
 	emit("\tmovq %d(%%rbp), %%rax", v->offset);
-	if (foff != 0)
-		emit("\taddq $%d, %%rax", foff);
-	emit("\tmovl (%%rax), %%eax");
+	if (f->offset != 0)
+		emit("\taddq $%d, %%rax", f->offset);
+	if (f->size == 1)
+		emit("\tmovsbl (%%rax), %%eax");
+	else
+		emit("\tmovl (%%rax), %%eax");
 }
 
 static void gen_ptr_member_assign(struct ast_node *node)
 {
 	struct var_entry *v;
-	int idx;
-	int i;
-	int foff;
+	struct field_entry *f;
 
 	v = lookup_var(node->children[0]->value);
-	idx = lookup_struct(v->struct_type);
-	for (i = 0; i < struct_types[idx].field_count; i++)
-		if (strcmp(struct_flds[idx][i].name, node->value) == 0)
-			break;
-	foff = struct_flds[idx][i].offset;
+	f = lookup_field(lookup_struct(v->struct_type), node->value);
 	gen_expression(node->children[1]);
 	emit("\tpush %%rax");
 	emit("\tmovq %d(%%rbp), %%rax", v->offset);
-	if (foff != 0)
-		emit("\taddq $%d, %%rax", foff);
+	if (f->offset != 0)
+		emit("\taddq $%d, %%rax", f->offset);
 	emit("\tpop %%rcx");
-	emit("\tmovl %%ecx, (%%rax)");
+	if (f->size == 1)
+		emit("\tmovb %%cl, (%%rax)");
+	else
+		emit("\tmovl %%ecx, (%%rax)");
 }
 
 static void gen_number(struct ast_node *node)
