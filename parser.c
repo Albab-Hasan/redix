@@ -779,6 +779,11 @@ static struct ast_node *parse_function(void)
 			position++;
 	}
 	expect(TOKEN_RPAREN);
+	if (current()->type == TOKEN_SEMICOLON) {
+		position++;
+		node->type = NODE_PROTO;
+		return node;
+	}
 	add_child(node, parse_block()); /* body is always last child */
 	return node;
 }

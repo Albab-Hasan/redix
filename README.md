@@ -20,6 +20,7 @@ code generation. Currently it supports:
 - `for` loops
 - `break` and `continue`
 - multiple functions with up to 6 parameters and calls
+- function prototypes: `int foo(int a);` forward-declares a function, enabling calls before the definition and mutual recursion
 - `void` return type and bare `return;`
 - pointers: `int *p`, address-of `&x`, dereference `*p`, pointer parameters
 - pointer arithmetic: `p + n`, `p - n`, `p++`, `p--`, pointer difference, and `p[i]` indexing

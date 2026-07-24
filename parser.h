@@ -50,6 +50,7 @@ enum node_type {
 	NODE_GLOBAL_CHAR_PTR,
 	NODE_GLOBAL_ARRAY,
 	NODE_GLOBAL_CHAR_ARRAY,
+	NODE_PROTO,
 };
 
 struct ast_node {
