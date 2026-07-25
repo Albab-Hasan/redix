@@ -816,9 +816,13 @@ static void gen_char_array_decl(struct ast_node *node)
 static void gen_compound(struct ast_node *node)
 {
 	int i;
+	int saved;
 
+	/* inner vars go out of scope when the block exits so outer names resolve again */
+	saved = var_count;
 	for (i = 0; i < node->child_count; i++)
 		gen_statement(node->children[i]);
+	var_count = saved;
 }
 
 static void gen_if(struct ast_node *node)

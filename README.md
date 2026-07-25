@@ -33,6 +33,7 @@ code generation. Currently it supports:
 - `do`/`while` loops: body runs at least once, `break` and `continue` work as expected
 - enums: `enum name { A, B = 5, C };` at file scope, constants fold to numbers at parse time, usable in expressions and as `case` labels
 - `#define NAME value`: object-like macros, expanded in the lexer, value can be any token sequence, macros can reference other macros, works as array sizes
+- nested block scoping: `{ int x = 5; }` declares `x` only for the duration of the block; inner variables shadow outer ones with the same name and the outer name is restored when the block exits
 - `//` line comments and `/* */` block comments
 
 ## Building
