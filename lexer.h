@@ -62,6 +62,8 @@ enum token_type {
 	TOKEN_DEFAULT,
 	TOKEN_DO,
 	TOKEN_ENUM,
+	TOKEN_UNSIGNED,
+	TOKEN_LONG,
 };
 
 struct token {

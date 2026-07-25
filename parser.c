@@ -462,9 +462,32 @@ static struct ast_node *parse_declaration_inner(void)
 	struct ast_node *node;
 	int is_ptr;
 	int is_char;
+	int is_unsigned;
+	int is_long;
 
-	is_char = (current()->type == TOKEN_CHAR);
-	position++;
+	is_char = 0;
+	is_unsigned = 0;
+	is_long = 0;
+
+	if (current()->type == TOKEN_UNSIGNED) {
+		is_unsigned = 1;
+		position++;
+	}
+	if (current()->type == TOKEN_LONG) {
+		is_long = 1;
+		position++;
+		if (current()->type == TOKEN_INT)
+			position++;
+	} else if (current()->type == TOKEN_INT) {
+		position++;
+	} else if (current()->type == TOKEN_CHAR) {
+		is_char = 1;
+		position++;
+	} else if (!is_unsigned) {
+		fprintf(stderr, "parser: expected type specifier\n");
+		exit(1);
+	}
+
 	is_ptr = 0;
 	if (current()->type == TOKEN_STAR) {
 		is_ptr = 1;
@@ -483,6 +506,12 @@ static struct ast_node *parse_declaration_inner(void)
 	if (is_ptr)
 		node = make_node(is_char ? NODE_CHAR_PTR_DECLARATION : NODE_PTR_DECLARATION,
 				name->value);
+	else if (is_long)
+		node = make_node(NODE_LONG_DECLARATION, name->value);
+	else if (is_unsigned && is_char)
+		node = make_node(NODE_UNSIGNED_CHAR_DECLARATION, name->value);
+	else if (is_unsigned)
+		node = make_node(NODE_UNSIGNED_DECLARATION, name->value);
 	else
 		node = make_node(is_char ? NODE_CHAR_DECLARATION : NODE_DECLARATION,
 				name->value);
@@ -713,7 +742,9 @@ static struct ast_node *parse_statement(void)
 	case TOKEN_LBRACE:	return parse_block();
 	case TOKEN_RETURN:	return parse_return();
 	case TOKEN_INT:
-	case TOKEN_CHAR:	return parse_declaration();
+	case TOKEN_CHAR:
+	case TOKEN_UNSIGNED:
+	case TOKEN_LONG:	return parse_declaration();
 	case TOKEN_STRUCT:	return parse_local_struct_decl();
 	case TOKEN_IF:		return parse_if();
 	case TOKEN_WHILE:	return parse_while();
@@ -738,8 +769,10 @@ static struct ast_node *parse_function(void)
 	int is_char_param;
 
 	/* return type gets consumed and ignored since every value is int sized anyway */
+	if (current()->type == TOKEN_UNSIGNED)
+		position++;
 	if (current()->type == TOKEN_INT || current()->type == TOKEN_VOID
-			|| current()->type == TOKEN_CHAR)
+			|| current()->type == TOKEN_CHAR || current()->type == TOKEN_LONG)
 		position++;
 	else
 		expect(TOKEN_INT);
@@ -758,8 +791,24 @@ static struct ast_node *parse_function(void)
 			add_child(param, make_node(NODE_VAR, pname->value));
 			add_child(node, param);
 		} else {
-			is_char_param = (current()->type == TOKEN_CHAR);
-			position++;
+			int is_unsigned_param = 0;
+			int is_long_param = 0;
+			is_char_param = 0;
+			if (current()->type == TOKEN_UNSIGNED) {
+				is_unsigned_param = 1;
+				position++;
+			}
+			if (current()->type == TOKEN_LONG) {
+				is_long_param = 1;
+				position++;
+				if (current()->type == TOKEN_INT)
+					position++;
+			} else if (current()->type == TOKEN_INT) {
+				position++;
+			} else if (current()->type == TOKEN_CHAR) {
+				is_char_param = 1;
+				position++;
+			}
 			is_ptr_param = 0;
 			if (current()->type == TOKEN_STAR) {
 				is_ptr_param = 1;
@@ -770,6 +819,12 @@ static struct ast_node *parse_function(void)
 				add_child(node, make_node(
 						is_char_param ? NODE_CHAR_PTR_DECLARATION : NODE_PTR_DECLARATION,
 						pname->value));
+			else if (is_long_param)
+				add_child(node, make_node(NODE_LONG_DECLARATION, pname->value));
+			else if (is_unsigned_param && is_char_param)
+				add_child(node, make_node(NODE_UNSIGNED_CHAR_DECLARATION, pname->value));
+			else if (is_unsigned_param)
+				add_child(node, make_node(NODE_UNSIGNED_DECLARATION, pname->value));
 			else
 				add_child(node, make_node(
 						is_char_param ? NODE_CHAR_DECLARATION : NODE_DECLARATION,

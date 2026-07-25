@@ -75,6 +75,8 @@ const char *token_type_name(enum token_type type)
 	case TOKEN_DEFAULT:		return "TOKEN_DEFAULT";
 	case TOKEN_DO:			return "TOKEN_DO";
 	case TOKEN_ENUM:		return "TOKEN_ENUM";
+	case TOKEN_UNSIGNED:		return "TOKEN_UNSIGNED";
+	case TOKEN_LONG:		return "TOKEN_LONG";
 	}
 	return "UNKNOWN";
 }
@@ -101,6 +103,8 @@ static const struct {
 	{ "default",  TOKEN_DEFAULT },
 	{ "do",       TOKEN_DO },
 	{ "enum",     TOKEN_ENUM },
+	{ "unsigned", TOKEN_UNSIGNED },
+	{ "long",     TOKEN_LONG },
 };
 
 #define NKEYWORDS (sizeof(keywords) / sizeof(keywords[0]))

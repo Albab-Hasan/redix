@@ -13,11 +13,12 @@ static char loop_cont_label[64];
 #define MAX_VARS 128
 static struct var_entry {
 	char *name;
-	int offset;    /* negative offset from rbp */
+	int offset;      /* negative offset from rbp */
 	int is_ptr;
 	int is_array;
 	int is_struct;
-	int elem_size; /* 1 for char 4 for int */
+	int is_unsigned;
+	int elem_size;   /* 1 for char 4 for int 8 for long */
 	char struct_type[64];
 } var_map[MAX_VARS];
 static int var_count;
@@ -116,7 +117,7 @@ static struct var_entry *lookup_var(const char *name)
 }
 
 /* every scalar and ptr gets a full 8 byte slot so offsets never need alignment math */
-static int declare_var(const char *name, int is_ptr, int elem_size)
+static int declare_var(const char *name, int is_ptr, int is_unsigned, int elem_size)
 {
 	stack_offset -= 8;
 	var_map[var_count].name = strdup(name);
@@ -124,6 +125,7 @@ static int declare_var(const char *name, int is_ptr, int elem_size)
 	var_map[var_count].is_ptr = is_ptr;
 	var_map[var_count].is_array = 0;
 	var_map[var_count].is_struct = 0;
+	var_map[var_count].is_unsigned = is_unsigned;
 	var_map[var_count].elem_size = elem_size;
 	var_map[var_count].struct_type[0] = '\0';
 	var_count++;
@@ -347,38 +349,84 @@ static void gen_unary(struct ast_node *node)
 }
 
 /* ecx holds left eax holds right */
-static void gen_arith(const char *op)
+static void gen_arith(const char *op, int is_uns, int is_long)
 {
 	if (strcmp(op, "+") == 0) {
-		emit("\taddl %%ecx, %%eax");
+		emit(is_long ? "\taddq %%rcx, %%rax" : "\taddl %%ecx, %%eax");
 	} else if (strcmp(op, "-") == 0) {
-		emit("\tsubl %%eax, %%ecx");
-		emit("\tmovl %%ecx, %%eax");
+		if (is_long) {
+			emit("\tsubq %%rax, %%rcx");
+			emit("\tmovq %%rcx, %%rax");
+		} else {
+			emit("\tsubl %%eax, %%ecx");
+			emit("\tmovl %%ecx, %%eax");
+		}
 	} else if (strcmp(op, "*") == 0) {
-		emit("\timull %%ecx, %%eax");
+		emit(is_long ? "\timulq %%rcx, %%rax" : "\timull %%ecx, %%eax");
 	} else if (strcmp(op, "/") == 0) {
-		emit("\tmovl %%eax, %%ebx");
-		emit("\tmovl %%ecx, %%eax");
-		emit("\tcdq");
-		emit("\tidivl %%ebx");
+		if (is_long && is_uns) {
+			emit("\tmovq %%rax, %%rbx");
+			emit("\tmovq %%rcx, %%rax");
+			emit("\txorq %%rdx, %%rdx");
+			emit("\tdivq %%rbx");
+		} else if (is_long) {
+			emit("\tmovq %%rax, %%rbx");
+			emit("\tmovq %%rcx, %%rax");
+			emit("\tcqto");
+			emit("\tidivq %%rbx");
+		} else if (is_uns) {
+			emit("\tmovl %%eax, %%ebx");
+			emit("\tmovl %%ecx, %%eax");
+			emit("\txorl %%edx, %%edx");
+			emit("\tdivl %%ebx");
+		} else {
+			emit("\tmovl %%eax, %%ebx");
+			emit("\tmovl %%ecx, %%eax");
+			emit("\tcdq");
+			emit("\tidivl %%ebx");
+		}
 	} else if (strcmp(op, "%") == 0) {
-		emit("\tmovl %%eax, %%ebx");
-		emit("\tmovl %%ecx, %%eax");
-		emit("\tcdq");
-		emit("\tidivl %%ebx");
-		emit("\tmovl %%edx, %%eax");
+		if (is_long && is_uns) {
+			emit("\tmovq %%rax, %%rbx");
+			emit("\tmovq %%rcx, %%rax");
+			emit("\txorq %%rdx, %%rdx");
+			emit("\tdivq %%rbx");
+			emit("\tmovq %%rdx, %%rax");
+		} else if (is_long) {
+			emit("\tmovq %%rax, %%rbx");
+			emit("\tmovq %%rcx, %%rax");
+			emit("\tcqto");
+			emit("\tidivq %%rbx");
+			emit("\tmovq %%rdx, %%rax");
+		} else if (is_uns) {
+			emit("\tmovl %%eax, %%ebx");
+			emit("\tmovl %%ecx, %%eax");
+			emit("\txorl %%edx, %%edx");
+			emit("\tdivl %%ebx");
+			emit("\tmovl %%edx, %%eax");
+		} else {
+			emit("\tmovl %%eax, %%ebx");
+			emit("\tmovl %%ecx, %%eax");
+			emit("\tcdq");
+			emit("\tidivl %%ebx");
+			emit("\tmovl %%edx, %%eax");
+		}
 	}
 }
 
 /* ecx holds left eax holds right */
-static void gen_compare(const char *op)
+static void gen_compare(const char *op, int is_uns, int is_long)
 {
-	emit("\tcmpl %%eax, %%ecx");
+	emit(is_long ? "\tcmpq %%rax, %%rcx" : "\tcmpl %%eax, %%ecx");
 	emit("\tmovl $0, %%eax");
-	if (strcmp(op, "<") == 0)       emit("\tsetl %%al");
-	else if (strcmp(op, "<=") == 0) emit("\tsetle %%al");
-	else if (strcmp(op, ">") == 0)  emit("\tsetg %%al");
-	else if (strcmp(op, ">=") == 0) emit("\tsetge %%al");
+	if (strcmp(op, "<") == 0)
+		emit(is_uns ? "\tsetb %%al"  : "\tsetl %%al");
+	else if (strcmp(op, "<=") == 0)
+		emit(is_uns ? "\tsetbe %%al" : "\tsetle %%al");
+	else if (strcmp(op, ">") == 0)
+		emit(is_uns ? "\tseta %%al"  : "\tsetg %%al");
+	else if (strcmp(op, ">=") == 0)
+		emit(is_uns ? "\tsetae %%al" : "\tsetge %%al");
 	else if (strcmp(op, "==") == 0) emit("\tsete %%al");
 	else if (strcmp(op, "!=") == 0) emit("\tsetne %%al");
 }
@@ -418,20 +466,67 @@ static int is_bitwise_op(const char *op)
 }
 
 /* ecx holds left eax holds right -- sal and sar want the count in cl */
-static void gen_bitwise(const char *op)
+static void gen_bitwise(const char *op, int is_uns, int is_long)
 {
 	if (op[0] == '&') {
-		emit("\tandl %%ecx, %%eax");
+		emit(is_long ? "\tandq %%rcx, %%rax" : "\tandl %%ecx, %%eax");
 	} else if (op[0] == '|') {
-		emit("\torl %%ecx, %%eax");
+		emit(is_long ? "\torq %%rcx, %%rax"  : "\torl %%ecx, %%eax");
 	} else if (op[0] == '^') {
-		emit("\txorl %%ecx, %%eax");
+		emit(is_long ? "\txorq %%rcx, %%rax" : "\txorl %%ecx, %%eax");
 	} else if (op[0] == '<') {
 		emit("\txchg %%eax, %%ecx");
-		emit("\tsall %%cl, %%eax");
+		emit(is_long ? "\tsalq %%cl, %%rax"  : "\tsall %%cl, %%eax");
 	} else {
+		/* unsigned right shift does not sign-fill */
 		emit("\txchg %%eax, %%ecx");
-		emit("\tsarl %%cl, %%eax");
+		if (is_long && is_uns)  emit("\tshrq %%cl, %%rax");
+		else if (is_long)       emit("\tsarq %%cl, %%rax");
+		else if (is_uns)        emit("\tshrl %%cl, %%eax");
+		else                    emit("\tsarl %%cl, %%eax");
+	}
+}
+
+static int expr_is_unsigned(struct ast_node *node)
+{
+	struct var_entry *v;
+	int i;
+
+	switch (node->type) {
+	case NODE_VAR:
+		if (lookup_global(node->value))
+			return 0;
+		v = lookup_var(node->value);
+		return v->is_unsigned;
+	case NODE_BINARY:
+	case NODE_UNARY:
+		for (i = 0; i < node->child_count; i++)
+			if (expr_is_unsigned(node->children[i])) return 1;
+		return 0;
+	default:
+		return 0;
+	}
+}
+
+/* long means elem_size 8 and not a pointer */
+static int expr_is_long(struct ast_node *node)
+{
+	struct var_entry *v;
+	int i;
+
+	switch (node->type) {
+	case NODE_VAR:
+		if (lookup_global(node->value))
+			return 0;
+		v = lookup_var(node->value);
+		return v->elem_size == 8 && !v->is_ptr;
+	case NODE_BINARY:
+	case NODE_UNARY:
+		for (i = 0; i < node->child_count; i++)
+			if (expr_is_long(node->children[i])) return 1;
+		return 0;
+	default:
+		return 0;
 	}
 }
 
@@ -507,6 +602,10 @@ static void gen_binary(struct ast_node *node)
 	const char *op = node->value;
 	int lscale = expr_ptr_scale(node->children[0]);
 	int rscale = expr_ptr_scale(node->children[1]);
+	int is_uns = expr_is_unsigned(node->children[0])
+			|| expr_is_unsigned(node->children[1]);
+	int is_long = expr_is_long(node->children[0])
+			|| expr_is_long(node->children[1]);
 
 	gen_expression(node->children[0]);
 	emit("\tpush %%rax");
@@ -516,25 +615,28 @@ static void gen_binary(struct ast_node *node)
 	if (is_arith_op(op) && (lscale || rscale))
 		gen_ptr_arith(op, lscale, rscale);
 	else if (is_arith_op(op))
-		gen_arith(op);
+		gen_arith(op, is_uns, is_long);
 	else if (is_compare_op(op))
-		gen_compare(op);
+		gen_compare(op, is_uns, is_long);
 	else if (is_bitwise_op(op))
-		gen_bitwise(op);
+		gen_bitwise(op, is_uns, is_long);
 	else
 		gen_logical(op);
 }
 
-static void emit_load(int off, int is_ptr, int esz)
+static void emit_load(int off, int is_ptr, int is_unsigned, int esz)
 {
-	if (is_ptr)        emit("\tmovq %d(%%rbp), %%rax", off);
-	else if (esz == 1) emit("\tmovsbl %d(%%rbp), %%eax", off);
-	else               emit("\tmovl %d(%%rbp), %%eax", off);
+	if (is_ptr)                        emit("\tmovq %d(%%rbp), %%rax", off);
+	else if (esz == 8)                 emit("\tmovq %d(%%rbp), %%rax", off);
+	else if (esz == 1 && is_unsigned)  emit("\tmovzbl %d(%%rbp), %%eax", off);
+	else if (esz == 1)                 emit("\tmovsbl %d(%%rbp), %%eax", off);
+	else                               emit("\tmovl %d(%%rbp), %%eax", off);
 }
 
 static void emit_store(int off, int is_ptr, int esz)
 {
 	if (is_ptr)        emit("\tmovq %%rax, %d(%%rbp)", off);
+	else if (esz == 8) emit("\tmovq %%rax, %d(%%rbp)", off);
 	else if (esz == 1) emit("\tmovb %%al, %d(%%rbp)", off);
 	else               emit("\tmovl %%eax, %d(%%rbp)", off);
 }
@@ -558,7 +660,7 @@ static void gen_var(struct ast_node *node)
 	if (v->is_array)
 		emit("\tleaq %d(%%rbp), %%rax", v->offset);
 	else
-		emit_load(v->offset, v->is_ptr, v->elem_size);
+		emit_load(v->offset, v->is_ptr, v->is_unsigned, v->elem_size);
 }
 
 static void gen_assign(struct ast_node *node)
@@ -640,7 +742,7 @@ static void gen_deref_assign(struct ast_node *node)
 
 static void gen_ptr_declaration(struct ast_node *node)
 {
-	int offset = declare_var(node->value, 1, 4);
+	int offset = declare_var(node->value, 1, 0, 4);
 
 	if (node->child_count > 0) {
 		gen_expression(node->children[0]);
@@ -650,7 +752,7 @@ static void gen_ptr_declaration(struct ast_node *node)
 
 static void gen_char_ptr_declaration(struct ast_node *node)
 {
-	int offset = declare_var(node->value, 1, 1);
+	int offset = declare_var(node->value, 1, 0, 1);
 
 	if (node->child_count > 0) {
 		gen_expression(node->children[0]);
@@ -691,12 +793,13 @@ static void gen_inc_dec(struct ast_node *node, int delta, int post)
 	off = v->offset;
 	esz = v->elem_size;
 	if (post)
-		emit_load(off, v->is_ptr, esz);
+		emit_load(off, v->is_ptr, v->is_unsigned, esz);
 	if (v->is_ptr)         emit("\t%sq $%d, %d(%%rbp)", op, esz, off);
+	else if (esz == 8)     emit("\t%sq $1, %d(%%rbp)", op, off);
 	else if (esz == 1)     emit("\t%sb $1, %d(%%rbp)", op, off);
 	else                   emit("\t%sl $1, %d(%%rbp)", op, off);
 	if (!post)
-		emit_load(off, v->is_ptr, esz);
+		emit_load(off, v->is_ptr, v->is_unsigned, esz);
 }
 
 static void gen_call(struct ast_node *node)
@@ -785,7 +888,7 @@ static void gen_return(struct ast_node *node)
 
 static void gen_declaration(struct ast_node *node)
 {
-	int offset = declare_var(node->value, 0, 4);
+	int offset = declare_var(node->value, 0, 0, 4);
 
 	if (node->child_count > 0) {
 		gen_expression(node->children[0]);
@@ -795,11 +898,44 @@ static void gen_declaration(struct ast_node *node)
 
 static void gen_char_declaration(struct ast_node *node)
 {
-	int offset = declare_var(node->value, 0, 1);
+	int offset = declare_var(node->value, 0, 0, 1);
 
 	if (node->child_count > 0) {
 		gen_expression(node->children[0]);
 		emit("\tmovb %%al, %d(%%rbp)", offset);
+	}
+}
+
+static void gen_unsigned_declaration(struct ast_node *node)
+{
+	int offset = declare_var(node->value, 0, 1, 4);
+
+	if (node->child_count > 0) {
+		gen_expression(node->children[0]);
+		emit("\tmovl %%eax, %d(%%rbp)", offset);
+	}
+}
+
+static void gen_unsigned_char_declaration(struct ast_node *node)
+{
+	int offset = declare_var(node->value, 0, 1, 1);
+
+	if (node->child_count > 0) {
+		gen_expression(node->children[0]);
+		emit("\tmovb %%al, %d(%%rbp)", offset);
+	}
+}
+
+static void gen_long_declaration(struct ast_node *node)
+{
+	int offset = declare_var(node->value, 0, 0, 8);
+
+	if (node->child_count > 0) {
+		gen_expression(node->children[0]);
+		/* int-sized results need sign extension to fill the 64 bit slot */
+		if (!expr_is_long(node->children[0]))
+			emit("\tmovslq %%eax, %%rax");
+		emit("\tmovq %%rax, %d(%%rbp)", offset);
 	}
 }
 
@@ -987,10 +1123,13 @@ static void gen_statement(struct ast_node *node)
 {
 	switch (node->type) {
 	case NODE_RETURN:		gen_return(node);		break;
-	case NODE_DECLARATION:		gen_declaration(node);		break;
-	case NODE_CHAR_DECLARATION:	gen_char_declaration(node);	break;
-	case NODE_PTR_DECLARATION:	gen_ptr_declaration(node);	break;
-	case NODE_CHAR_PTR_DECLARATION:	gen_char_ptr_declaration(node);	break;
+	case NODE_DECLARATION:			gen_declaration(node);			break;
+	case NODE_CHAR_DECLARATION:		gen_char_declaration(node);		break;
+	case NODE_UNSIGNED_DECLARATION:		gen_unsigned_declaration(node);		break;
+	case NODE_UNSIGNED_CHAR_DECLARATION:	gen_unsigned_char_declaration(node);	break;
+	case NODE_LONG_DECLARATION:		gen_long_declaration(node);		break;
+	case NODE_PTR_DECLARATION:		gen_ptr_declaration(node);		break;
+	case NODE_CHAR_PTR_DECLARATION:		gen_char_ptr_declaration(node);		break;
 	case NODE_ARRAY_DECL:		gen_array_decl(node);		break;
 	case NODE_CHAR_ARRAY_DECL:	gen_char_array_decl(node);	break;
 	case NODE_STRUCT_DECL:		gen_struct_decl(node);		break;
@@ -1042,7 +1181,10 @@ static int count_stack_bytes(struct ast_node *node)
 	if (node->type == NODE_DECLARATION
 			|| node->type == NODE_PTR_DECLARATION
 			|| node->type == NODE_CHAR_DECLARATION
-			|| node->type == NODE_CHAR_PTR_DECLARATION)
+			|| node->type == NODE_CHAR_PTR_DECLARATION
+			|| node->type == NODE_UNSIGNED_DECLARATION
+			|| node->type == NODE_UNSIGNED_CHAR_DECLARATION
+			|| node->type == NODE_LONG_DECLARATION)
 		return 8;
 	if (node->type == NODE_ARRAY_DECL) {
 		n = atoi(node->children[0]->value);
@@ -1092,6 +1234,7 @@ static void gen_function(struct ast_node *node)
 	int offset;
 	int is_ptr_param;
 	int is_char_param;
+	int is_unsigned;
 	int elem_sz;
 	struct ast_node *body;
 
@@ -1131,10 +1274,16 @@ static void gen_function(struct ast_node *node)
 		is_ptr_param = node->children[i]->type == NODE_PTR_DECLARATION
 				|| node->children[i]->type == NODE_CHAR_PTR_DECLARATION;
 		is_char_param = node->children[i]->type == NODE_CHAR_DECLARATION
-				|| node->children[i]->type == NODE_CHAR_PTR_DECLARATION;
-		elem_sz = is_char_param ? 1 : 4;
-		offset = declare_var(node->children[i]->value, is_ptr_param, elem_sz);
-		if (is_ptr_param)
+				|| node->children[i]->type == NODE_CHAR_PTR_DECLARATION
+				|| node->children[i]->type == NODE_UNSIGNED_CHAR_DECLARATION;
+		is_unsigned = node->children[i]->type == NODE_UNSIGNED_DECLARATION
+				|| node->children[i]->type == NODE_UNSIGNED_CHAR_DECLARATION;
+		if (node->children[i]->type == NODE_LONG_DECLARATION)
+			elem_sz = 8;
+		else
+			elem_sz = is_char_param ? 1 : 4;
+		offset = declare_var(node->children[i]->value, is_ptr_param, is_unsigned, elem_sz);
+		if (is_ptr_param || elem_sz == 8)
 			emit("\tmovq %s, %d(%%rbp)", ptr_param_regs[i], offset);
 		else if (is_char_param)
 			emit("\tmovb %s, %d(%%rbp)", byte_param_regs[i], offset);

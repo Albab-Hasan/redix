@@ -34,6 +34,8 @@ code generation. Currently it supports:
 - enums: `enum name { A, B = 5, C };` at file scope, constants fold to numbers at parse time, usable in expressions and as `case` labels
 - `#define NAME value`: object-like macros, expanded in the lexer, value can be any token sequence, macros can reference other macros, works as array sizes
 - nested block scoping: `{ int x = 5; }` declares `x` only for the duration of the block; inner variables shadow outer ones with the same name and the outer name is restored when the block exits
+- `unsigned int` and `unsigned char`: zero-extension on char load (`movzbl`), unsigned division (`divl`/`divq` with `xor edx`), unsigned right shift (`shrl`/`shrq`), unsigned comparison flags (`setb`/`seta`/`setbe`/`setae`)
+- `long`: 64-bit integer, 64-bit arithmetic (`addq`/`subq`/`imulq`/`idivq`), `movq` loads and stores, works as local variables, function parameters, and return types
 - `//` line comments and `/* */` block comments
 
 ## Building
