@@ -53,6 +53,15 @@ static struct {
 } struct_types[MAX_STRUCTS];
 static int struct_type_count;
 
+/* maps function names to their struct return size so call sites know rax:rdx is live */
+#define MAX_SRET 32
+static struct {
+	char name[64];
+	int  total_size;
+} sret_tab[MAX_SRET];
+static int sret_count;
+static char current_func_sret_type[64];
+
 static int lookup_struct(const char *name)
 {
 	int i;
@@ -113,6 +122,17 @@ static struct var_entry *lookup_var(const char *name)
 			return &var_map[i];
 	fprintf(stderr, "codegen: undefined variable '%s'\n", name);
 	exit(1);
+	return NULL;
+}
+
+/* like lookup_var but returns NULL on miss so callers can test without dying */
+static struct var_entry *try_lookup_var(const char *name)
+{
+	int i;
+
+	for (i = var_count - 1; i >= 0; i--)
+		if (strcmp(var_map[i].name, name) == 0)
+			return &var_map[i];
 	return NULL;
 }
 
@@ -251,7 +271,18 @@ static void gen_struct_def(struct ast_node *node)
 
 static void gen_struct_decl(struct ast_node *node)
 {
-	declare_struct_var(node->children[0]->value, node->value);
+	int offset;
+	int sz;
+
+	offset = declare_struct_var(node->children[0]->value, node->value);
+	if (node->child_count > 1) {
+		/* initializer must be a struct-returning call; result lands in rax:rdx */
+		sz = struct_types[lookup_struct(node->value)].total_size;
+		gen_expression(node->children[1]);
+		emit("\tmovq %%rax, %d(%%rbp)", offset);
+		if (sz > 8)
+			emit("\tmovq %%rdx, %d(%%rbp)", offset + 8);
+	}
 }
 
 static void gen_member(struct ast_node *node)
@@ -807,18 +838,52 @@ static void gen_call(struct ast_node *node)
 	static const char *arg_regs[] = {
 		"%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"
 	};
+	struct var_entry *svs[16];
+	int reg_base[16];
+	int nregs[16];
 	int i;
-	int nargs = node->child_count;
+	int j;
+	int nargs;
+	int total_regs;
+	int sidx;
+
+	nargs = node->child_count;
+	total_regs = 0;
+	for (i = 0; i < nargs && i < 16; i++) {
+		svs[i] = NULL;
+		nregs[i] = 1;
+		if (node->children[i]->type == NODE_VAR) {
+			svs[i] = try_lookup_var(node->children[i]->value);
+			if (svs[i] && svs[i]->is_struct) {
+				sidx = lookup_struct(svs[i]->struct_type);
+				nregs[i] = (struct_types[sidx].total_size + 7) / 8;
+			}
+		}
+		reg_base[i] = total_regs;
+		total_regs += nregs[i];
+	}
 
 	/* args go through the stack since evaluating a later arg could
 	 * itself be a call that clobbers the arg regs */
 	for (i = 0; i < nargs; i++) {
-		gen_expression(node->children[i]);
-		emit("\tpush %%rax");
+		if (nregs[i] > 1) {
+			/* struct > 8B: push HIGH first (deeper) so LOW ends up on top */
+			emit("\tpushq %d(%%rbp)", svs[i]->offset + 8);
+			emit("\tpushq %d(%%rbp)", svs[i]->offset);
+		} else if (svs[i] != NULL && svs[i]->is_struct) {
+			/* struct <= 8B fits in one reg: single qword push */
+			emit("\tpushq %d(%%rbp)", svs[i]->offset);
+		} else {
+			gen_expression(node->children[i]);
+			emit("\tpush %%rax");
+		}
 	}
-	/* pop right-to-left so arg0 ends up in rdi */
-	for (i = nargs - 1; i >= 0; i--)
-		emit("\tpop %s", arg_regs[i]);
+	/* pop right-to-left so arg0 ends up in rdi
+	 * within each struct arg pop low bytes first (lowest reg) then high */
+	for (i = nargs - 1; i >= 0; i--) {
+		for (j = 0; j < nregs[i]; j++)
+			emit("\tpop %s", arg_regs[reg_base[i] + j]);
+	}
 	emit("\tcall %s", node->value);
 }
 
@@ -878,9 +943,25 @@ static void gen_expression(struct ast_node *node)
 
 static void gen_return(struct ast_node *node)
 {
+	struct var_entry *v;
+	int sidx;
+	int sz;
+
 	/* bare return in void functions has no expression child */
-	if (node->child_count > 0)
-		gen_expression(node->children[0]);
+	if (node->child_count > 0) {
+		if (current_func_sret_type[0]
+				&& node->children[0]->type == NODE_VAR) {
+			/* returning a struct var: pack bytes into rax and rdx per sysv */
+			v = lookup_var(node->children[0]->value);
+			sidx = lookup_struct(current_func_sret_type);
+			sz = struct_types[sidx].total_size;
+			emit("\tmovq %d(%%rbp), %%rax", v->offset);
+			if (sz > 8)
+				emit("\tmovq %d(%%rbp), %%rdx", v->offset + 8);
+		} else {
+			gen_expression(node->children[0]);
+		}
+	}
 	emit("\tmovq %%rbp, %%rsp");
 	emit("\tpopq %%rbp");
 	emit("\tret");
@@ -1227,35 +1308,66 @@ static void gen_function(struct ast_node *node)
 	static const char *byte_param_regs[] = {
 		"%dil", "%sil", "%dl", "%cl", "%r8b", "%r9b"
 	};
+	struct ast_node *p;
+	struct ast_node *body;
 	int i;
 	int num_params;
 	int num_locals;
 	int alloc_size;
+	int param_bytes;
 	int offset;
 	int is_ptr_param;
 	int is_char_param;
 	int is_unsigned;
 	int elem_sz;
-	struct ast_node *body;
+	int has_sret;
+	int param_start;
+	int reg_idx;
+	int sidx;
+	int sz;
 
 	/* stale locals from the previous function must not resolve here */
 	var_count = 0;
 	stack_offset = 0;
 	loop_break_label[0] = '\0';
 	loop_cont_label[0] = '\0';
+	current_func_sret_type[0] = '\0';
+
+	has_sret = node->child_count > 0
+			&& node->children[0]->type == NODE_STRUCT_RET;
+	param_start = has_sret ? 1 : 0;
+	if (has_sret) {
+		strncpy(current_func_sret_type, node->children[0]->value, 63);
+		current_func_sret_type[63] = '\0';
+	}
 
 	/* body is always last child preceding children are params */
 	body = node->children[node->child_count - 1];
-	num_params = node->child_count - 1;
+	num_params = node->child_count - 1 - param_start;
 
 	emit(".global %s", node->value);
 	emit("%s:", node->value);
 	emit("\tpushq %%rbp");
 	emit("\tmovq %%rsp, %%rbp");
 
+	/* sum actual param sizes since struct val params can exceed 8 bytes */
+	param_bytes = 0;
+	for (i = 0; i < num_params; i++) {
+		p = node->children[param_start + i];
+		if (p->type == NODE_STRUCT_VAL_PARAM) {
+			sidx = lookup_struct(p->value);
+			sz = struct_types[sidx].total_size;
+			if (sz % 8 != 0)
+				sz += 8 - (sz % 8);
+			param_bytes += sz;
+		} else {
+			param_bytes += 8;
+		}
+	}
+
 	/* rounded up since the abi wants rsp 16 byte aligned at call time */
 	num_locals = count_stack_bytes(body);
-	alloc_size = num_params * 8 + num_locals;
+	alloc_size = param_bytes + num_locals;
 	if (alloc_size > 0) {
 		if (alloc_size % 16 != 0)
 			alloc_size += 16 - (alloc_size % 16);
@@ -1263,32 +1375,45 @@ static void gen_function(struct ast_node *node)
 	}
 
 	/* params get stack slots so they read and write like any other local */
-	for (i = 0; i < num_params && i < 6; i++) {
-		if (node->children[i]->type == NODE_STRUCT_PTR_DECL) {
-			offset = declare_struct_ptr_var(
-					node->children[i]->children[0]->value,
-					node->children[i]->value);
-			emit("\tmovq %s, %d(%%rbp)", ptr_param_regs[i], offset);
+	reg_idx = 0;
+	for (i = 0; i < num_params && reg_idx < 6; i++) {
+		p = node->children[param_start + i];
+		if (p->type == NODE_STRUCT_VAL_PARAM) {
+			sidx = lookup_struct(p->value);
+			sz = struct_types[sidx].total_size;
+			offset = declare_struct_var(p->children[0]->value, p->value);
+			emit("\tmovq %s, %d(%%rbp)", ptr_param_regs[reg_idx], offset);
+			if (sz > 8 && reg_idx + 1 < 6)
+				emit("\tmovq %s, %d(%%rbp)", ptr_param_regs[reg_idx + 1], offset + 8);
+			reg_idx += (sz + 7) / 8;
 			continue;
 		}
-		is_ptr_param = node->children[i]->type == NODE_PTR_DECLARATION
-				|| node->children[i]->type == NODE_CHAR_PTR_DECLARATION;
-		is_char_param = node->children[i]->type == NODE_CHAR_DECLARATION
-				|| node->children[i]->type == NODE_CHAR_PTR_DECLARATION
-				|| node->children[i]->type == NODE_UNSIGNED_CHAR_DECLARATION;
-		is_unsigned = node->children[i]->type == NODE_UNSIGNED_DECLARATION
-				|| node->children[i]->type == NODE_UNSIGNED_CHAR_DECLARATION;
-		if (node->children[i]->type == NODE_LONG_DECLARATION)
+		if (p->type == NODE_STRUCT_PTR_DECL) {
+			offset = declare_struct_ptr_var(
+					p->children[0]->value, p->value);
+			emit("\tmovq %s, %d(%%rbp)", ptr_param_regs[reg_idx], offset);
+			reg_idx++;
+			continue;
+		}
+		is_ptr_param = p->type == NODE_PTR_DECLARATION
+				|| p->type == NODE_CHAR_PTR_DECLARATION;
+		is_char_param = p->type == NODE_CHAR_DECLARATION
+				|| p->type == NODE_CHAR_PTR_DECLARATION
+				|| p->type == NODE_UNSIGNED_CHAR_DECLARATION;
+		is_unsigned = p->type == NODE_UNSIGNED_DECLARATION
+				|| p->type == NODE_UNSIGNED_CHAR_DECLARATION;
+		if (p->type == NODE_LONG_DECLARATION)
 			elem_sz = 8;
 		else
 			elem_sz = is_char_param ? 1 : 4;
-		offset = declare_var(node->children[i]->value, is_ptr_param, is_unsigned, elem_sz);
+		offset = declare_var(p->value, is_ptr_param, is_unsigned, elem_sz);
 		if (is_ptr_param || elem_sz == 8)
-			emit("\tmovq %s, %d(%%rbp)", ptr_param_regs[i], offset);
+			emit("\tmovq %s, %d(%%rbp)", ptr_param_regs[reg_idx], offset);
 		else if (is_char_param)
-			emit("\tmovb %s, %d(%%rbp)", byte_param_regs[i], offset);
+			emit("\tmovb %s, %d(%%rbp)", byte_param_regs[reg_idx], offset);
 		else
-			emit("\tmovl %s, %d(%%rbp)", param_regs[i], offset);
+			emit("\tmovl %s, %d(%%rbp)", param_regs[reg_idx], offset);
+		reg_idx++;
 	}
 
 	gen_statement(body);
@@ -1343,12 +1468,29 @@ static void gen_program(struct ast_node *node)
 {
 	int i;
 	int has_globals = 0;
+	int sidx;
 
 	collect_strings(node);
 
+	sret_count = 0;
 	for (i = 0; i < node->child_count; i++)
 		if (node->children[i]->type == NODE_STRUCT_DEF)
 			gen_struct_def(node->children[i]);
+
+	/* register struct-returning functions so call sites can find them */
+	for (i = 0; i < node->child_count; i++) {
+		struct ast_node *fn = node->children[i];
+		if ((fn->type == NODE_FUNCTION || fn->type == NODE_PROTO)
+				&& fn->child_count > 0
+				&& fn->children[0]->type == NODE_STRUCT_RET
+				&& sret_count < MAX_SRET) {
+			sidx = lookup_struct(fn->children[0]->value);
+			strncpy(sret_tab[sret_count].name, fn->value, 63);
+			sret_tab[sret_count].name[63] = '\0';
+			sret_tab[sret_count].total_size = struct_types[sidx].total_size;
+			sret_count++;
+		}
+	}
 
 	for (i = 0; i < node->child_count; i++) {
 		switch (node->children[i]->type) {

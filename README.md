@@ -36,6 +36,8 @@ code generation. Currently it supports:
 - nested block scoping: `{ int x = 5; }` declares `x` only for the duration of the block; inner variables shadow outer ones with the same name and the outer name is restored when the block exits
 - `unsigned int` and `unsigned char`: zero-extension on char load (`movzbl`), unsigned division (`divl`/`divq` with `xor edx`), unsigned right shift (`shrl`/`shrq`), unsigned comparison flags (`setb`/`seta`/`setbe`/`setae`)
 - `long`: 64-bit integer, 64-bit arithmetic (`addq`/`subq`/`imulq`/`idivq`), `movq` loads and stores, works as local variables, function parameters, and return types
+- struct value return: `struct T func(...)` returns the struct in `rax` (≤8 bytes) or `rax`:`rdx` (≤16 bytes) per the System V AMD64 ABI; caller unpacks into a local with `struct T v = func(...)`
+- struct value parameters: `func(struct T p)` passes the struct in one register (≤8 bytes) or two registers (≤16 bytes); struct value args must be local variable references
 - `//` line comments and `/* */` block comments
 
 ## Building
