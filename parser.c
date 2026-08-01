@@ -208,6 +208,56 @@ static struct ast_node *parse_unary(void)
 		sprintf(buf, "%d", sz);
 		return make_node(NODE_NUMBER, buf);
 	}
+	/* peek at position+1 to tell (type) cast from (expr) grouping */
+	if (current()->type == TOKEN_LPAREN
+			&& position + 1 < token_count
+			&& (tokens[position + 1].type == TOKEN_INT
+				|| tokens[position + 1].type == TOKEN_CHAR
+				|| tokens[position + 1].type == TOKEN_LONG
+				|| tokens[position + 1].type == TOKEN_UNSIGNED)) {
+		struct ast_node *node;
+		const char *cast_type;
+		int is_char;
+		int is_long;
+		int is_unsigned;
+		int is_ptr;
+
+		position++; /* consume ( */
+		is_char = 0;
+		is_long = 0;
+		is_unsigned = 0;
+		is_ptr = 0;
+		if (current()->type == TOKEN_UNSIGNED) {
+			is_unsigned = 1;
+			position++;
+		}
+		if (current()->type == TOKEN_LONG) {
+			is_long = 1;
+			position++;
+			if (current()->type == TOKEN_INT)
+				position++;
+		} else if (current()->type == TOKEN_INT) {
+			position++;
+		} else if (current()->type == TOKEN_CHAR) {
+			is_char = 1;
+			position++;
+		}
+		if (current()->type == TOKEN_STAR) {
+			is_ptr = 1;
+			position++;
+		}
+		expect(TOKEN_RPAREN);
+		if      (is_ptr && is_char)        cast_type = "char*";
+		else if (is_ptr)                   cast_type = "int*";
+		else if (is_long)                  cast_type = "long";
+		else if (is_unsigned && is_char)   cast_type = "unsigned_char";
+		else if (is_unsigned)              cast_type = "unsigned";
+		else if (is_char)                  cast_type = "char";
+		else                               cast_type = "int";
+		node = make_node(NODE_CAST, (char *)cast_type);
+		add_child(node, parse_unary());
+		return node;
+	}
 	return parse_primary();
 }
 

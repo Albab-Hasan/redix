@@ -56,6 +56,7 @@ enum node_type {
 	NODE_LONG_DECLARATION,
 	NODE_STRUCT_RET,
 	NODE_STRUCT_VAL_PARAM,
+	NODE_CAST,
 };
 
 struct ast_node {

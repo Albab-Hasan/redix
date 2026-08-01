@@ -534,6 +534,9 @@ static int expr_is_unsigned(struct ast_node *node)
 		for (i = 0; i < node->child_count; i++)
 			if (expr_is_unsigned(node->children[i])) return 1;
 		return 0;
+	case NODE_CAST:
+		return strcmp(node->value, "unsigned") == 0
+			|| strcmp(node->value, "unsigned_char") == 0;
 	default:
 		return 0;
 	}
@@ -556,6 +559,8 @@ static int expr_is_long(struct ast_node *node)
 		for (i = 0; i < node->child_count; i++)
 			if (expr_is_long(node->children[i])) return 1;
 		return 0;
+	case NODE_CAST:
+		return strcmp(node->value, "long") == 0;
 	default:
 		return 0;
 	}
@@ -583,6 +588,10 @@ static int expr_ptr_scale(struct ast_node *node)
 		if (g)
 			return g->elem_size;
 		return lookup_var(node->value)->elem_size;
+	case NODE_CAST:
+		if (strcmp(node->value, "int*") == 0)  return 4;
+		if (strcmp(node->value, "char*") == 0) return 1;
+		return 0;
 	case NODE_BINARY:
 		if (node->value[1] != '\0')
 			return 0;
@@ -897,6 +906,21 @@ static void gen_string(struct ast_node *node)
 	emit("\tleaq .LC%d(%%rip), %%rax", i);
 }
 
+/* truncation or extension to match the target type */
+static void gen_cast(struct ast_node *node)
+{
+	const char *t = node->value;
+
+	gen_expression(node->children[0]);
+	if (strcmp(t, "char") == 0)
+		emit("\tmovsbl %%al, %%eax");
+	else if (strcmp(t, "unsigned_char") == 0)
+		emit("\tmovzbl %%al, %%eax");
+	else if (strcmp(t, "long") == 0)
+		emit("\tmovslq %%eax, %%rax");
+	/* int unsigned int* char* -- value already in the right register */
+}
+
 /* like if/else but the chosen branch lands in eax */
 static void gen_ternary(struct ast_node *node)
 {
@@ -934,6 +958,7 @@ static void gen_expression(struct ast_node *node)
 	case NODE_MEMBER_ASSIGN:	gen_member_assign(node);	break;
 	case NODE_PTR_MEMBER:		gen_ptr_member(node);		break;
 	case NODE_PTR_MEMBER_ASSIGN:	gen_ptr_member_assign(node);	break;
+	case NODE_CAST:			gen_cast(node);			break;
 	default:
 		fprintf(stderr, "codegen: bad expression node type %d\n",
 				node->type);
@@ -1241,6 +1266,7 @@ static void gen_statement(struct ast_node *node)
 	case NODE_MEMBER_ASSIGN:
 	case NODE_PTR_MEMBER:
 	case NODE_PTR_MEMBER_ASSIGN:
+	case NODE_CAST:
 		gen_expression(node);
 		break;
 	default:
