@@ -538,6 +538,25 @@ static struct ast_node *parse_declaration_inner(void)
 		exit(1);
 	}
 
+	/* function pointer: type (*name)(param-types) */
+	if (current()->type == TOKEN_LPAREN
+			&& position + 1 < token_count
+			&& tokens[position + 1].type == TOKEN_STAR) {
+		position++; /* ( */
+		position++; /* * */
+		name = expect(TOKEN_IDENTIFIER);
+		expect(TOKEN_RPAREN);
+		expect(TOKEN_LPAREN);
+		while (current()->type != TOKEN_RPAREN)
+			position++;
+		expect(TOKEN_RPAREN);
+		node = make_node(NODE_FPTR_DECLARATION, name->value);
+		if (current()->type == TOKEN_ASSIGN) {
+			position++;
+			add_child(node, parse_expression());
+		}
+		return node;
+	}
 	is_ptr = 0;
 	if (current()->type == TOKEN_STAR) {
 		is_ptr = 1;
@@ -843,6 +862,28 @@ static struct ast_node *parse_function(void)
 		add_child(node, make_node(NODE_STRUCT_RET, sret_type->value));
 	expect(TOKEN_LPAREN);
 	while (current()->type != TOKEN_RPAREN) {
+		/* function pointer param: type (*name)(param-types) */
+		if ((current()->type == TOKEN_INT || current()->type == TOKEN_CHAR
+				|| current()->type == TOKEN_VOID
+				|| current()->type == TOKEN_LONG
+				|| current()->type == TOKEN_UNSIGNED)
+				&& position + 2 < token_count
+				&& tokens[position + 1].type == TOKEN_LPAREN
+				&& tokens[position + 2].type == TOKEN_STAR) {
+			position++; /* type */
+			position++; /* ( */
+			position++; /* * */
+			pname = expect(TOKEN_IDENTIFIER);
+			expect(TOKEN_RPAREN);
+			expect(TOKEN_LPAREN);
+			while (current()->type != TOKEN_RPAREN)
+				position++;
+			expect(TOKEN_RPAREN);
+			add_child(node, make_node(NODE_FPTR_DECLARATION, pname->value));
+			if (current()->type == TOKEN_COMMA)
+				position++;
+			continue;
+		}
 		if (current()->type == TOKEN_STRUCT) {
 			struct token *stype;
 			struct ast_node *param;

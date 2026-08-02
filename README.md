@@ -33,12 +33,13 @@ code generation. Currently it supports:
 - `do`/`while` loops: body runs at least once, `break` and `continue` work as expected
 - enums: `enum name { A, B = 5, C };` at file scope, constants fold to numbers at parse time, usable in expressions and as `case` labels
 - `#define NAME value`: object-like macros, expanded in the lexer, value can be any token sequence, macros can reference other macros, works as array sizes
-- nested block scoping: `{ int x = 5; }` declares `x` only for the duration of the block; inner variables shadow outer ones with the same name and the outer name is restored when the block exits
+- nested block scoping: `{ int x = 5; }` declares `x` only for the duration of the block; inner variables shadow outer ones with the same name and the outer name comes back when the block exits
 - `unsigned int` and `unsigned char`: zero-extension on char load (`movzbl`), unsigned division (`divl`/`divq` with `xor edx`), unsigned right shift (`shrl`/`shrq`), unsigned comparison flags (`setb`/`seta`/`setbe`/`setae`)
 - `long`: 64-bit integer, 64-bit arithmetic (`addq`/`subq`/`imulq`/`idivq`), `movq` loads and stores, works as local variables, function parameters, and return types
 - struct value return: `struct T func(...)` returns the struct in `rax` (≤8 bytes) or `rax`:`rdx` (≤16 bytes) per the System V AMD64 ABI; caller unpacks into a local with `struct T v = func(...)`
 - struct value parameters: `func(struct T p)` passes the struct in one register (≤8 bytes) or two registers (≤16 bytes); struct value args must be local variable references
-- type casting: `(int)`, `(char)`, `(long)`, `(unsigned)`, `(unsigned char)`, `(int *)`, `(char *)` — truncates or extends the value to the target type; `(char)` sign-extends from byte, `(unsigned char)` zero-extends, `(long)` sign-extends to 64 bits
+- type casting: `(int)`, `(char)`, `(long)`, `(unsigned)`, `(unsigned char)`, `(int *)`, `(char *)`; truncates or extends the value to the target type; `(char)` sign-extends from byte, `(unsigned char)` zero-extends, `(long)` sign-extends to 64 bits
+- function pointers: `int (*fp)(int, int)` declarations, assignment from function names (`fp = add`), indirect calls (`fp(a, b)`), and function pointer parameters (`int apply(int (*fn)(int), int x)`); function names used as values decay to their address via `leaq`; indirect calls emit `call *%rax`
 - `//` line comments and `/* */` block comments
 
 ## Building

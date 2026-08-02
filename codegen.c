@@ -18,11 +18,16 @@ static struct var_entry {
 	int is_array;
 	int is_struct;
 	int is_unsigned;
+	int is_fptr;     /* 8 byte slot holding a function address not a data pointer not a long */
 	int elem_size;   /* 1 for char 4 for int 8 for long */
 	char struct_type[64];
 } var_map[MAX_VARS];
 static int var_count;
 static int stack_offset;
+
+#define MAX_FUNCS 64
+static char *func_names[MAX_FUNCS];
+static int func_count;
 
 /* globals get the same treatment as var_map so pointer and array
  * globals remember what they point at */
@@ -146,7 +151,24 @@ static int declare_var(const char *name, int is_ptr, int is_unsigned, int elem_s
 	var_map[var_count].is_array = 0;
 	var_map[var_count].is_struct = 0;
 	var_map[var_count].is_unsigned = is_unsigned;
+	var_map[var_count].is_fptr = 0;
 	var_map[var_count].elem_size = elem_size;
+	var_map[var_count].struct_type[0] = '\0';
+	var_count++;
+	return stack_offset;
+}
+
+static int declare_fptr_var(const char *name)
+{
+	stack_offset -= 8;
+	var_map[var_count].name = strdup(name);
+	var_map[var_count].offset = stack_offset;
+	var_map[var_count].is_ptr = 0;
+	var_map[var_count].is_array = 0;
+	var_map[var_count].is_struct = 0;
+	var_map[var_count].is_unsigned = 0;
+	var_map[var_count].is_fptr = 1;
+	var_map[var_count].elem_size = 8;
 	var_map[var_count].struct_type[0] = '\0';
 	var_count++;
 	return stack_offset;
@@ -167,6 +189,7 @@ static int declare_struct_var(const char *name, const char *type_name)
 	var_map[var_count].is_ptr = 0;
 	var_map[var_count].is_array = 0;
 	var_map[var_count].is_struct = 1;
+	var_map[var_count].is_fptr = 0;
 	var_map[var_count].elem_size = 4;
 	strncpy(var_map[var_count].struct_type, type_name, 63);
 	var_map[var_count].struct_type[63] = '\0';
@@ -182,6 +205,7 @@ static int declare_struct_ptr_var(const char *name, const char *type_name)
 	var_map[var_count].is_ptr = 1;
 	var_map[var_count].is_array = 0;
 	var_map[var_count].is_struct = 0;
+	var_map[var_count].is_fptr = 0;
 	var_map[var_count].elem_size = 4;
 	strncpy(var_map[var_count].struct_type, type_name, 63);
 	var_map[var_count].struct_type[63] = '\0';
@@ -202,6 +226,7 @@ static int declare_array(const char *name, int size, int elem_size)
 	var_map[var_count].is_ptr = 1;
 	var_map[var_count].is_array = 1;
 	var_map[var_count].is_struct = 0;
+	var_map[var_count].is_fptr = 0;
 	var_map[var_count].elem_size = elem_size;
 	var_map[var_count].struct_type[0] = '\0';
 	var_count++;
@@ -553,7 +578,7 @@ static int expr_is_long(struct ast_node *node)
 		if (lookup_global(node->value))
 			return 0;
 		v = lookup_var(node->value);
-		return v->elem_size == 8 && !v->is_ptr;
+		return v->elem_size == 8 && !v->is_ptr && !v->is_fptr;
 	case NODE_BINARY:
 	case NODE_UNARY:
 		for (i = 0; i < node->child_count; i++)
@@ -681,11 +706,26 @@ static void emit_store(int off, int is_ptr, int esz)
 	else               emit("\tmovl %%eax, %d(%%rbp)", off);
 }
 
+static int is_func(const char *name)
+{
+	int i;
+
+	for (i = 0; i < func_count; i++)
+		if (strcmp(func_names[i], name) == 0)
+			return 1;
+	return 0;
+}
+
 static void gen_var(struct ast_node *node)
 {
 	struct var_entry *v;
 	struct glob_entry *g;
 
+	/* function name used as a value decays to its address */
+	if (is_func(node->value)) {
+		emit("\tleaq %s(%%rip), %%rax", node->value);
+		return;
+	}
 	g = lookup_global(node->value);
 	if (g) {
 		if (g->is_array)
@@ -842,6 +882,27 @@ static void gen_inc_dec(struct ast_node *node, int delta, int post)
 		emit_load(off, v->is_ptr, v->is_unsigned, esz);
 }
 
+static void gen_fptr_call(struct ast_node *node, struct var_entry *fv)
+{
+	static const char *arg_regs[] = {
+		"%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"
+	};
+	int i;
+	int nargs;
+
+	nargs = node->child_count;
+	/* args go through the stack since evaluating a later arg could
+	 * itself be a call that clobbers the arg regs */
+	for (i = 0; i < nargs; i++) {
+		gen_expression(node->children[i]);
+		emit("\tpush %%rax");
+	}
+	for (i = nargs - 1; i >= 0; i--)
+		emit("\tpop %s", arg_regs[i]);
+	emit("\tmovq %d(%%rbp), %%rax", fv->offset);
+	emit("\tcall *%%rax");
+}
+
 static void gen_call(struct ast_node *node)
 {
 	static const char *arg_regs[] = {
@@ -855,6 +916,14 @@ static void gen_call(struct ast_node *node)
 	int nargs;
 	int total_regs;
 	int sidx;
+
+	struct var_entry *fv;
+
+	fv = try_lookup_var(node->value);
+	if (fv && fv->is_fptr) {
+		gen_fptr_call(node, fv);
+		return;
+	}
 
 	nargs = node->child_count;
 	total_regs = 0;
@@ -1055,6 +1124,17 @@ static void gen_char_array_decl(struct ast_node *node)
 	declare_array(node->value, atoi(node->children[0]->value), 1);
 }
 
+static void gen_fptr_declaration(struct ast_node *node)
+{
+	int offset;
+
+	offset = declare_fptr_var(node->value);
+	if (node->child_count > 0) {
+		gen_expression(node->children[0]);
+		emit("\tmovq %%rax, %d(%%rbp)", offset);
+	}
+}
+
 static void gen_compound(struct ast_node *node)
 {
 	int i;
@@ -1238,6 +1318,7 @@ static void gen_statement(struct ast_node *node)
 	case NODE_CHAR_PTR_DECLARATION:		gen_char_ptr_declaration(node);		break;
 	case NODE_ARRAY_DECL:		gen_array_decl(node);		break;
 	case NODE_CHAR_ARRAY_DECL:	gen_char_array_decl(node);	break;
+	case NODE_FPTR_DECLARATION:	gen_fptr_declaration(node);	break;
 	case NODE_STRUCT_DECL:		gen_struct_decl(node);		break;
 	case NODE_STRUCT_PTR_DECL:	gen_struct_ptr_decl(node);	break;
 	case NODE_COMPOUND:		gen_compound(node);		break;
@@ -1291,7 +1372,8 @@ static int count_stack_bytes(struct ast_node *node)
 			|| node->type == NODE_CHAR_PTR_DECLARATION
 			|| node->type == NODE_UNSIGNED_DECLARATION
 			|| node->type == NODE_UNSIGNED_CHAR_DECLARATION
-			|| node->type == NODE_LONG_DECLARATION)
+			|| node->type == NODE_LONG_DECLARATION
+			|| node->type == NODE_FPTR_DECLARATION)
 		return 8;
 	if (node->type == NODE_ARRAY_DECL) {
 		n = atoi(node->children[0]->value);
@@ -1421,6 +1503,12 @@ static void gen_function(struct ast_node *node)
 			reg_idx++;
 			continue;
 		}
+		if (p->type == NODE_FPTR_DECLARATION) {
+			offset = declare_fptr_var(p->value);
+			emit("\tmovq %s, %d(%%rbp)", ptr_param_regs[reg_idx], offset);
+			reg_idx++;
+			continue;
+		}
 		is_ptr_param = p->type == NODE_PTR_DECLARATION
 				|| p->type == NODE_CHAR_PTR_DECLARATION;
 		is_char_param = p->type == NODE_CHAR_DECLARATION
@@ -1499,9 +1587,17 @@ static void gen_program(struct ast_node *node)
 	collect_strings(node);
 
 	sret_count = 0;
+	func_count = 0;
 	for (i = 0; i < node->child_count; i++)
 		if (node->children[i]->type == NODE_STRUCT_DEF)
 			gen_struct_def(node->children[i]);
+
+	/* register function names so they can be used as values in expressions */
+	for (i = 0; i < node->child_count; i++)
+		if ((node->children[i]->type == NODE_FUNCTION
+				|| node->children[i]->type == NODE_PROTO)
+				&& func_count < MAX_FUNCS)
+			func_names[func_count++] = node->children[i]->value;
 
 	/* register struct-returning functions so call sites can find them */
 	for (i = 0; i < node->child_count; i++) {

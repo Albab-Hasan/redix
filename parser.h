@@ -57,6 +57,7 @@ enum node_type {
 	NODE_STRUCT_RET,
 	NODE_STRUCT_VAL_PARAM,
 	NODE_CAST,
+	NODE_FPTR_DECLARATION,
 };
 
 struct ast_node {
