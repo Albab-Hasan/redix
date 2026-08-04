@@ -37,6 +37,7 @@ static struct glob_entry {
 	int is_ptr;
 	int is_array;
 	int elem_size;
+	char struct_type[64];
 } global_map[MAX_GLOBALS];
 static int global_count;
 
@@ -49,7 +50,10 @@ static int string_count;
 static struct field_entry {
 	char name[64];
 	int offset;
-	int size;   /* 1 for char 4 for int */
+	int size;        /* 1 for char 4 for int 8 for long or any pointer */
+	int is_ptr;
+	int elem_size;   /* what a pointer field points at 0 when the field is not a pointer */
+	char struct_type[64];
 } struct_flds[MAX_STRUCTS][MAX_FIELDS];
 static struct {
 	char name[64];
@@ -115,7 +119,17 @@ static void declare_global(const char *name, int is_ptr, int is_array,
 	global_map[global_count].is_ptr = is_ptr;
 	global_map[global_count].is_array = is_array;
 	global_map[global_count].elem_size = elem_size;
+	global_map[global_count].struct_type[0] = '\0';
 	global_count++;
+}
+
+static void declare_global_struct(const char *name, const char *type_name,
+		int is_ptr, int is_array)
+{
+	declare_global(name, is_ptr, is_array,
+			struct_types[lookup_struct(type_name)].total_size);
+	strncpy(global_map[global_count - 1].struct_type, type_name, 63);
+	global_map[global_count - 1].struct_type[63] = '\0';
 }
 
 static struct var_entry *lookup_var(const char *name)
@@ -206,7 +220,34 @@ static int declare_struct_ptr_var(const char *name, const char *type_name)
 	var_map[var_count].is_array = 0;
 	var_map[var_count].is_struct = 0;
 	var_map[var_count].is_fptr = 0;
-	var_map[var_count].elem_size = 4;
+	/* stepping a struct pointer moves a whole struct not 4 bytes */
+	var_map[var_count].elem_size =
+			struct_types[lookup_struct(type_name)].total_size;
+	strncpy(var_map[var_count].struct_type, type_name, 63);
+	var_map[var_count].struct_type[63] = '\0';
+	var_count++;
+	return stack_offset;
+}
+
+static int declare_struct_array_var(const char *name, const char *type_name,
+		int count)
+{
+	int esz;
+	int bytes;
+
+	esz = struct_types[lookup_struct(type_name)].total_size;
+	bytes = esz * count;
+	if (bytes % 8 != 0)
+		bytes += 8 - (bytes % 8);
+	stack_offset -= bytes;
+	var_map[var_count].name = strdup(name);
+	var_map[var_count].offset = stack_offset;
+	var_map[var_count].is_ptr = 1;
+	var_map[var_count].is_array = 1;
+	var_map[var_count].is_struct = 1;
+	var_map[var_count].is_unsigned = 0;
+	var_map[var_count].is_fptr = 0;
+	var_map[var_count].elem_size = esz;
 	strncpy(var_map[var_count].struct_type, type_name, 63);
 	var_map[var_count].struct_type[63] = '\0';
 	var_count++;
@@ -263,10 +304,14 @@ static void gen_statement(struct ast_node *node);
 
 static void gen_struct_def(struct ast_node *node)
 {
+	struct ast_node *f;
+	const char *fname;
 	int i;
 	int idx;
 	int off;
 	int fsz;
+	int fis_ptr;
+	int felem;
 	int max_align;
 
 	idx = struct_type_count++;
@@ -276,14 +321,45 @@ static void gen_struct_def(struct ast_node *node)
 	off = 0;
 	max_align = 1;
 	for (i = 0; i < node->child_count; i++) {
-		fsz = node->children[i]->type == NODE_CHAR_DECLARATION ? 1 : 4;
-		/* char fields pack tight ints align to 4 so loads never straddle */
+		f = node->children[i];
+		fname = f->value;
+		fis_ptr = 0;
+		felem = 0;
+		struct_flds[idx][i].struct_type[0] = '\0';
+		switch (f->type) {
+		case NODE_CHAR_DECLARATION:
+			fsz = 1;
+			break;
+		case NODE_LONG_DECLARATION:
+			fsz = 8;
+			break;
+		case NODE_PTR_DECLARATION:
+		case NODE_CHAR_PTR_DECLARATION:
+			fsz = 8;
+			fis_ptr = 1;
+			felem = f->type == NODE_CHAR_PTR_DECLARATION ? 1 : 4;
+			break;
+		case NODE_STRUCT_PTR_DECL:
+			fsz = 8;
+			fis_ptr = 1;
+			/* the pointee size stays unresolved here so a struct can point at itself */
+			fname = f->children[0]->value;
+			strncpy(struct_flds[idx][i].struct_type, f->value, 63);
+			struct_flds[idx][i].struct_type[63] = '\0';
+			break;
+		default:
+			fsz = 4;
+			break;
+		}
+		/* char fields pack tight wider fields align to their size so loads never straddle */
 		if (off % fsz != 0)
 			off += fsz - (off % fsz);
-		strncpy(struct_flds[idx][i].name, node->children[i]->value, 63);
+		strncpy(struct_flds[idx][i].name, fname, 63);
 		struct_flds[idx][i].name[63] = '\0';
 		struct_flds[idx][i].offset = off;
 		struct_flds[idx][i].size = fsz;
+		struct_flds[idx][i].is_ptr = fis_ptr;
+		struct_flds[idx][i].elem_size = felem;
 		off += fsz;
 		if (fsz > max_align)
 			max_align = fsz;
@@ -310,75 +386,114 @@ static void gen_struct_decl(struct ast_node *node)
 	}
 }
 
-static void gen_member(struct ast_node *node)
-{
-	struct var_entry *v;
-	struct field_entry *f;
-	int combined;
-
-	v = lookup_var(node->children[0]->value);
-	f = lookup_field(lookup_struct(v->struct_type), node->value);
-	combined = v->offset + f->offset;
-	if (f->size == 1)
-		emit("\tmovsbl %d(%%rbp), %%eax", combined);
-	else
-		emit("\tmovl %d(%%rbp), %%eax", combined);
-}
-
-static void gen_member_assign(struct ast_node *node)
-{
-	struct var_entry *v;
-	struct field_entry *f;
-	int combined;
-
-	v = lookup_var(node->children[0]->value);
-	f = lookup_field(lookup_struct(v->struct_type), node->value);
-	combined = v->offset + f->offset;
-	gen_expression(node->children[1]);
-	if (f->size == 1)
-		emit("\tmovb %%al, %d(%%rbp)", combined);
-	else
-		emit("\tmovl %%eax, %d(%%rbp)", combined);
-}
-
 static void gen_struct_ptr_decl(struct ast_node *node)
 {
 	declare_struct_ptr_var(node->children[0]->value, node->value);
 }
 
-static void gen_ptr_member(struct ast_node *node)
+static void gen_struct_array_decl(struct ast_node *node)
 {
-	struct var_entry *v;
-	struct field_entry *f;
-
-	v = lookup_var(node->children[0]->value);
-	f = lookup_field(lookup_struct(v->struct_type), node->value);
-	emit("\tmovq %d(%%rbp), %%rax", v->offset);
-	if (f->offset != 0)
-		emit("\taddq $%d, %%rax", f->offset);
-	if (f->size == 1)
-		emit("\tmovsbl (%%rax), %%eax");
-	else
-		emit("\tmovl (%%rax), %%eax");
+	declare_struct_array_var(node->children[0]->value, node->value,
+			atoi(node->children[1]->value));
 }
 
-static void gen_ptr_member_assign(struct ast_node *node)
+/* the struct type an expression denotes or NULL when it is not a struct */
+static const char *expr_struct_type(struct ast_node *node)
 {
 	struct var_entry *v;
+	struct glob_entry *g;
 	struct field_entry *f;
+	const char *t;
 
-	v = lookup_var(node->children[0]->value);
-	f = lookup_field(lookup_struct(v->struct_type), node->value);
-	gen_expression(node->children[1]);
-	emit("\tpush %%rax");
-	emit("\tmovq %d(%%rbp), %%rax", v->offset);
+	switch (node->type) {
+	case NODE_VAR:
+		g = lookup_global(node->value);
+		if (g)
+			return g->struct_type[0] ? g->struct_type : NULL;
+		v = try_lookup_var(node->value);
+		if (v && v->struct_type[0])
+			return v->struct_type;
+		return NULL;
+	case NODE_MEMBER:
+	case NODE_MEMBER_ASSIGN:
+	case NODE_PTR_MEMBER:
+	case NODE_PTR_MEMBER_ASSIGN:
+		t = expr_struct_type(node->children[0]);
+		if (!t)
+			return NULL;
+		f = lookup_field(lookup_struct(t), node->value);
+		return f->struct_type[0] ? f->struct_type : NULL;
+	case NODE_DEREF:
+		return expr_struct_type(node->children[0]);
+	case NODE_BINARY:
+		t = expr_struct_type(node->children[0]);
+		return t ? t : expr_struct_type(node->children[1]);
+	default:
+		return NULL;
+	}
+}
+
+/* the object is either a named variable or an a[i] element */
+static void gen_obj_addr(struct ast_node *node)
+{
+	if (node->type == NODE_DEREF) {
+		gen_expression(node->children[0]);
+		return;
+	}
+	if (node->type != NODE_VAR) {
+		fprintf(stderr, "codegen: member access on a non struct\n");
+		exit(1);
+	}
+	if (is_global(node->value)) {
+		emit("\tleaq %s(%%rip), %%rax", node->value);
+		return;
+	}
+	emit("\tleaq %d(%%rbp), %%rax", lookup_var(node->value)->offset);
+}
+
+/* leaves the field address in rax and hands back the field so callers pick the width */
+static struct field_entry *gen_member_addr(struct ast_node *node)
+{
+	struct field_entry *f;
+	const char *t;
+
+	t = expr_struct_type(node->children[0]);
+	if (!t) {
+		fprintf(stderr, "codegen: no struct type for member '%s'\n",
+				node->value);
+		exit(1);
+	}
+	f = lookup_field(lookup_struct(t), node->value);
+	/* arrow starts from a pointer value dot starts from the object itself */
+	if (node->type == NODE_PTR_MEMBER || node->type == NODE_PTR_MEMBER_ASSIGN)
+		gen_expression(node->children[0]);
+	else
+		gen_obj_addr(node->children[0]);
 	if (f->offset != 0)
 		emit("\taddq $%d, %%rax", f->offset);
+	return f;
+}
+
+static void gen_member_load(struct ast_node *node)
+{
+	struct field_entry *f = gen_member_addr(node);
+
+	if (f->size == 8)      emit("\tmovq (%%rax), %%rax");
+	else if (f->size == 1) emit("\tmovsbl (%%rax), %%eax");
+	else                   emit("\tmovl (%%rax), %%eax");
+}
+
+static void gen_member_store(struct ast_node *node)
+{
+	struct field_entry *f;
+
+	gen_expression(node->children[1]);
+	emit("\tpush %%rax");
+	f = gen_member_addr(node);
 	emit("\tpop %%rcx");
-	if (f->size == 1)
-		emit("\tmovb %%cl, (%%rax)");
-	else
-		emit("\tmovl %%ecx, (%%rax)");
+	if (f->size == 8)      emit("\tmovq %%rcx, (%%rax)");
+	else if (f->size == 1) emit("\tmovb %%cl, (%%rax)");
+	else                   emit("\tmovl %%ecx, (%%rax)");
 }
 
 static void gen_number(struct ast_node *node)
@@ -591,11 +706,15 @@ static int expr_is_long(struct ast_node *node)
 	}
 }
 
-/* 4 for int* 1 for char* 0 if not a pointer */
+static int expr_deref_size(struct ast_node *node);
+
+/* 4 for int* 1 for char* the struct size for struct* 0 if not a pointer */
 static int expr_ptr_scale(struct ast_node *node)
 {
 	struct var_entry *v;
 	struct glob_entry *g;
+	struct field_entry *f;
+	const char *t;
 	int l;
 	int r;
 
@@ -608,7 +727,26 @@ static int expr_ptr_scale(struct ast_node *node)
 		if (!v->is_ptr)
 			return 0;
 		return v->elem_size;
+	case NODE_MEMBER:
+	case NODE_PTR_MEMBER:
+		t = expr_struct_type(node->children[0]);
+		if (!t)
+			return 0;
+		f = lookup_field(lookup_struct(t), node->value);
+		if (!f->is_ptr)
+			return 0;
+		if (f->struct_type[0])
+			return struct_types[lookup_struct(f->struct_type)].total_size;
+		return f->elem_size;
 	case NODE_ADDR_OF:
+		if (node->child_count > 0) {
+			t = expr_struct_type(node->children[0]);
+			if (t)
+				return struct_types[lookup_struct(t)].total_size;
+			if (node->children[0]->type == NODE_DEREF)
+				return expr_deref_size(node->children[0]->children[0]);
+			return 4;
+		}
 		g = lookup_global(node->value);
 		if (g)
 			return g->elem_size;
@@ -763,6 +901,15 @@ static void gen_assign(struct ast_node *node)
 
 static void gen_addr_of(struct ast_node *node)
 {
+	/* &a[i] and &s.f carry the operand as a child since there is no plain name to take */
+	if (node->child_count > 0) {
+		if (node->children[0]->type == NODE_MEMBER
+				|| node->children[0]->type == NODE_PTR_MEMBER)
+			gen_member_addr(node->children[0]);
+		else
+			gen_obj_addr(node->children[0]);
+		return;
+	}
 	if (is_global(node->value)) {
 		emit("\tleaq %s(%%rip), %%rax", node->value);
 		return;
@@ -932,7 +1079,8 @@ static void gen_call(struct ast_node *node)
 		nregs[i] = 1;
 		if (node->children[i]->type == NODE_VAR) {
 			svs[i] = try_lookup_var(node->children[i]->value);
-			if (svs[i] && svs[i]->is_struct) {
+			/* a struct array arg decays to a pointer so only real values go through regs */
+			if (svs[i] && svs[i]->is_struct && !svs[i]->is_array) {
 				sidx = lookup_struct(svs[i]->struct_type);
 				nregs[i] = (struct_types[sidx].total_size + 7) / 8;
 			}
@@ -948,7 +1096,7 @@ static void gen_call(struct ast_node *node)
 			/* struct > 8B: push HIGH first (deeper) so LOW ends up on top */
 			emit("\tpushq %d(%%rbp)", svs[i]->offset + 8);
 			emit("\tpushq %d(%%rbp)", svs[i]->offset);
-		} else if (svs[i] != NULL && svs[i]->is_struct) {
+		} else if (svs[i] != NULL && svs[i]->is_struct && !svs[i]->is_array) {
 			/* struct <= 8B fits in one reg: single qword push */
 			emit("\tpushq %d(%%rbp)", svs[i]->offset);
 		} else {
@@ -1023,11 +1171,15 @@ static void gen_expression(struct ast_node *node)
 	case NODE_DEREF_ASSIGN:		gen_deref_assign(node);		break;
 	case NODE_TERNARY:		gen_ternary(node);		break;
 	case NODE_STRING:		gen_string(node);		break;
-	case NODE_MEMBER:		gen_member(node);		break;
-	case NODE_MEMBER_ASSIGN:	gen_member_assign(node);	break;
-	case NODE_PTR_MEMBER:		gen_ptr_member(node);		break;
-	case NODE_PTR_MEMBER_ASSIGN:	gen_ptr_member_assign(node);	break;
+	case NODE_MEMBER:
+	case NODE_PTR_MEMBER:		gen_member_load(node);		break;
+	case NODE_MEMBER_ASSIGN:
+	case NODE_PTR_MEMBER_ASSIGN:	gen_member_store(node);		break;
 	case NODE_CAST:			gen_cast(node);			break;
+	case NODE_SIZEOF_STRUCT:
+		emit("\tmov $%d, %%eax",
+				struct_types[lookup_struct(node->value)].total_size);
+		break;
 	default:
 		fprintf(stderr, "codegen: bad expression node type %d\n",
 				node->type);
@@ -1116,12 +1268,26 @@ static void gen_long_declaration(struct ast_node *node)
 
 static void gen_array_decl(struct ast_node *node)
 {
-	declare_array(node->value, atoi(node->children[0]->value), 4);
+	int i;
+	int base;
+
+	base = declare_array(node->value, atoi(node->children[0]->value), 4);
+	for (i = 1; i < node->child_count; i++) {
+		gen_expression(node->children[i]);
+		emit("\tmovl %%eax, %d(%%rbp)", base + (i - 1) * 4);
+	}
 }
 
 static void gen_char_array_decl(struct ast_node *node)
 {
-	declare_array(node->value, atoi(node->children[0]->value), 1);
+	int i;
+	int base;
+
+	base = declare_array(node->value, atoi(node->children[0]->value), 1);
+	for (i = 1; i < node->child_count; i++) {
+		gen_expression(node->children[i]);
+		emit("\tmovb %%al, %d(%%rbp)", base + (i - 1));
+	}
 }
 
 static void gen_fptr_declaration(struct ast_node *node)
@@ -1321,6 +1487,7 @@ static void gen_statement(struct ast_node *node)
 	case NODE_FPTR_DECLARATION:	gen_fptr_declaration(node);	break;
 	case NODE_STRUCT_DECL:		gen_struct_decl(node);		break;
 	case NODE_STRUCT_PTR_DECL:	gen_struct_ptr_decl(node);	break;
+	case NODE_STRUCT_ARRAY_DECL:	gen_struct_array_decl(node);	break;
 	case NODE_COMPOUND:		gen_compound(node);		break;
 	case NODE_IF:			gen_if(node);			break;
 	case NODE_WHILE:		gen_while(node);		break;
@@ -1348,6 +1515,7 @@ static void gen_statement(struct ast_node *node)
 	case NODE_PTR_MEMBER:
 	case NODE_PTR_MEMBER_ASSIGN:
 	case NODE_CAST:
+	case NODE_SIZEOF_STRUCT:
 		gen_expression(node);
 		break;
 	default:
@@ -1391,9 +1559,11 @@ static int count_stack_bytes(struct ast_node *node)
 	}
 	if (node->type == NODE_STRUCT_PTR_DECL)
 		return 8;
-	if (node->type == NODE_STRUCT_DECL) {
+	if (node->type == NODE_STRUCT_DECL || node->type == NODE_STRUCT_ARRAY_DECL) {
 		sidx = lookup_struct(node->value);
 		bytes = struct_types[sidx].total_size;
+		if (node->type == NODE_STRUCT_ARRAY_DECL)
+			bytes *= atoi(node->children[1]->value);
 		if (bytes % 8 != 0)
 			bytes += 8 - (bytes % 8);
 		return bytes;
@@ -1545,34 +1715,58 @@ static int is_global_node(enum node_type t)
 	return t == NODE_GLOBAL || t == NODE_GLOBAL_PTR
 			|| t == NODE_GLOBAL_CHAR_PTR
 			|| t == NODE_GLOBAL_ARRAY
-			|| t == NODE_GLOBAL_CHAR_ARRAY;
+			|| t == NODE_GLOBAL_CHAR_ARRAY
+			|| t == NODE_GLOBAL_STRUCT
+			|| t == NODE_GLOBAL_STRUCT_PTR
+			|| t == NODE_GLOBAL_STRUCT_ARRAY;
+}
+
+/* struct globals keep the type in value so the label comes from the child */
+static const char *global_label(struct ast_node *node)
+{
+	if (node->type == NODE_GLOBAL_STRUCT
+			|| node->type == NODE_GLOBAL_STRUCT_PTR
+			|| node->type == NODE_GLOBAL_STRUCT_ARRAY)
+		return node->children[0]->value;
+	return node->value;
 }
 
 static void gen_global(struct ast_node *node)
 {
+	const char *name = global_label(node);
 	int val;
 	int bytes;
 
-	emit("\t.globl %s", node->value);
+	emit("\t.globl %s", name);
 	switch (node->type) {
 	case NODE_GLOBAL:
 		val = node->child_count > 0 ? atoi(node->children[0]->value) : 0;
 		emit("\t.align 4");
-		emit("%s:", node->value);
+		emit("%s:", name);
 		emit("\t.long %d", val);
 		break;
 	case NODE_GLOBAL_PTR:
 	case NODE_GLOBAL_CHAR_PTR:
+	case NODE_GLOBAL_STRUCT_PTR:
 		emit("\t.align 8");
-		emit("%s:", node->value);
+		emit("%s:", name);
 		emit("\t.quad 0");
+		break;
+	case NODE_GLOBAL_STRUCT:
+	case NODE_GLOBAL_STRUCT_ARRAY:
+		bytes = struct_types[lookup_struct(node->value)].total_size;
+		if (node->type == NODE_GLOBAL_STRUCT_ARRAY)
+			bytes *= atoi(node->children[1]->value);
+		emit("\t.align 8");
+		emit("%s:", name);
+		emit("\t.zero %d", bytes);
 		break;
 	default:
 		bytes = atoi(node->children[0]->value);
 		if (node->type == NODE_GLOBAL_ARRAY)
 			bytes = bytes * 4;
 		emit("\t.align 8");
-		emit("%s:", node->value);
+		emit("%s:", name);
 		emit("\t.zero %d", bytes);
 		break;
 	}
@@ -1630,6 +1824,18 @@ static void gen_program(struct ast_node *node)
 			break;
 		case NODE_GLOBAL_CHAR_ARRAY:
 			declare_global(node->children[i]->value, 1, 1, 1);
+			break;
+		case NODE_GLOBAL_STRUCT:
+			declare_global_struct(node->children[i]->children[0]->value,
+					node->children[i]->value, 0, 0);
+			break;
+		case NODE_GLOBAL_STRUCT_PTR:
+			declare_global_struct(node->children[i]->children[0]->value,
+					node->children[i]->value, 1, 0);
+			break;
+		case NODE_GLOBAL_STRUCT_ARRAY:
+			declare_global_struct(node->children[i]->children[0]->value,
+					node->children[i]->value, 1, 1);
 			break;
 		default:
 			break;

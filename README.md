@@ -24,11 +24,18 @@ code generation. Currently it supports:
 - `void` return type and bare `return;`
 - pointers: `int *p`, address-of `&x`, dereference `*p`, pointer parameters
 - pointer arithmetic: `p + n`, `p - n`, `p++`, `p--`, pointer difference, and `p[i]` indexing
-- arrays: `int a[N]`, element access `a[i]`, decay to pointer when passed to functions
+- arrays: `int a[N]`, element access `a[i]`, brace initializers `int a[3] = {1, 2, 3}` and size-inferred `int a[] = {1, 2, 3}`, decay to pointer when passed to functions
 - global arrays and pointers: `int a[N]`, `char buf[N]`, `int *p`, `char *s` at file scope, zero-initialized
 - `char` type: declarations, assignments, arithmetic, arrays `char a[N]`, pointer `char *p`, function parameters
 - `sizeof(type)`: `sizeof(int)` → 4, `sizeof(char)` → 1, `sizeof(int *)` / `sizeof(char *)` → 8
-- structs: `struct name { fields; }` definitions, local struct variables, member access and assignment via `.`, struct pointer declarations `struct T *p`, member access and assignment via `->`, struct pointer function parameters, `int` and `char` fields with real sizes and offsets (`char` packs to 1 byte, `int` aligns to 4, total size rounds up to the widest field)
+- structs: `struct name { fields; }` definitions, local struct variables, member access and assignment via `.`, struct pointer declarations `struct T *p`, member access and assignment via `->`, struct pointer function parameters, `int`, `char`, `long` and pointer fields with real sizes and offsets (`char` packs to 1 byte, `int` aligns to 4, `long` and pointers align to 8, total size rounds up to the widest field)
+- struct pointer fields: `struct node *next` inside a struct, including self-referential types, so linked lists and trees work
+- member chains: `p->next->val`, `a[i].x`, `s.p->f`; every postfix step builds on the address of the previous one
+- struct arrays: `struct T a[N]` as locals and globals, element access `a[i].field`, decay to a pointer when passed to functions
+- global structs: `struct T g;`, `struct T *gp;` and `struct T a[N];` at file scope, zero-initialized
+- struct pointer arithmetic: `p + n`, `p++`, `p--` step by the full struct size
+- `sizeof(struct T)` reports the real laid-out size, `sizeof(struct T *)` → 8
+- address of an element or member: `&a[i]`, `&s.field`, `&p->field`
 - `switch`/`case`/`default`: integer switch with fallthrough, `break` exits the switch
 - `do`/`while` loops: body runs at least once, `break` and `continue` work as expected
 - enums: `enum name { A, B = 5, C };` at file scope, constants fold to numbers at parse time, usable in expressions and as `case` labels
