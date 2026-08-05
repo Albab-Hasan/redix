@@ -525,18 +525,48 @@ static struct ast_node *parse_return(void)
 	return node;
 }
 
+/* extra dims hang off the first size node since the children of a declaration are initializers */
+static void parse_extra_dims(struct ast_node *size)
+{
+	while (current()->type == TOKEN_LBRACKET) {
+		position++;
+		add_child(size, make_node(NODE_NUMBER, expect(TOKEN_NUMBER)->value));
+		expect(TOKEN_RBRACKET);
+	}
+}
+
+/* nested braces flatten into one row major list so codegen can store the elements in order */
+static void parse_init_list(struct ast_node *node, int *count)
+{
+	expect(TOKEN_LBRACE);
+	while (current()->type != TOKEN_RBRACE) {
+		if (current()->type == TOKEN_LBRACE) {
+			parse_init_list(node, count);
+		} else {
+			add_child(node, parse_expression());
+			(*count)++;
+		}
+		if (current()->type == TOKEN_COMMA)
+			position++;
+	}
+	expect(TOKEN_RBRACE);
+}
+
 /* trailing ; stays unconsumed so the for loop init can reuse this */
 static struct ast_node *parse_declaration_inner(void)
 {
 	struct token *name;
 	struct token *size_tok;
 	struct ast_node *node;
+	struct ast_node *size;
 	int is_ptr;
 	int is_char;
 	int is_unsigned;
 	int is_long;
 	int infer_size;
 	int init_count;
+	int rest;
+	int i;
 	char sizebuf[16];
 
 	is_char = 0;
@@ -600,22 +630,21 @@ static struct ast_node *parse_declaration_inner(void)
 		expect(TOKEN_RBRACKET);
 		node = make_node(is_char ? NODE_CHAR_ARRAY_DECL : NODE_ARRAY_DECL,
 				name->value);
-		add_child(node, make_node(NODE_NUMBER, infer_size ? "0" : size_tok->value));
+		size = make_node(NODE_NUMBER, infer_size ? "0" : size_tok->value);
+		add_child(node, size);
+		parse_extra_dims(size);
 		if (current()->type == TOKEN_ASSIGN) {
 			position++;
-			expect(TOKEN_LBRACE);
 			init_count = 0;
-			while (current()->type != TOKEN_RBRACE) {
-				add_child(node, parse_expression());
-				init_count++;
-				if (current()->type == TOKEN_COMMA)
-					position++;
-			}
-			expect(TOKEN_RBRACE);
+			parse_init_list(node, &init_count);
 			if (infer_size) {
-				sprintf(sizebuf, "%d", init_count);
-				free(node->children[0]->value);
-				node->children[0]->value = strdup(sizebuf);
+				/* only the outermost dim can be inferred so the rest divide the count */
+				rest = 1;
+				for (i = 0; i < size->child_count; i++)
+					rest *= atoi(size->children[i]->value);
+				sprintf(sizebuf, "%d", init_count / rest);
+				free(size->value);
+				size->value = strdup(sizebuf);
 			}
 		}
 		return node;
@@ -1086,6 +1115,7 @@ static struct ast_node *parse_global(void)
 	struct token *name;
 	struct token *size_tok;
 	struct ast_node *node;
+	struct ast_node *size;
 	int is_char;
 	int is_ptr;
 
@@ -1101,10 +1131,12 @@ static struct ast_node *parse_global(void)
 		position++;
 		size_tok = expect(TOKEN_NUMBER);
 		expect(TOKEN_RBRACKET);
-		expect(TOKEN_SEMICOLON);
 		node = make_node(is_char ? NODE_GLOBAL_CHAR_ARRAY : NODE_GLOBAL_ARRAY,
 				name->value);
-		add_child(node, make_node(NODE_NUMBER, size_tok->value));
+		size = make_node(NODE_NUMBER, size_tok->value);
+		add_child(node, size);
+		parse_extra_dims(size);
+		expect(TOKEN_SEMICOLON);
 		return node;
 	}
 	if (is_ptr) {

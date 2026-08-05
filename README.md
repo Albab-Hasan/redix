@@ -25,6 +25,7 @@ code generation. Currently it supports:
 - pointers: `int *p`, address-of `&x`, dereference `*p`, pointer parameters
 - pointer arithmetic: `p + n`, `p - n`, `p++`, `p--`, pointer difference, and `p[i]` indexing
 - arrays: `int a[N]`, element access `a[i]`, brace initializers `int a[3] = {1, 2, 3}` and size-inferred `int a[] = {1, 2, 3}`, decay to pointer when passed to functions
+- N-dimensional arrays: `int a[2][3]`, `char c[2][3][4]` as locals and globals, element access `a[i][j]`, row-major layout, nested brace initializers `int a[2][3] = {{1, 2, 3}, {4, 5, 6}}` (flat lists work too), outer size inferred from the initializer with `int a[][2] = {1, 2, 3, 4}`, and a partial index like `a[i]` gives the row address so it can be passed as `int *`
 - global arrays and pointers: `int a[N]`, `char buf[N]`, `int *p`, `char *s` at file scope, zero-initialized
 - `char` type: declarations, assignments, arithmetic, arrays `char a[N]`, pointer `char *p`, function parameters
 - `sizeof(type)`: `sizeof(int)` → 4, `sizeof(char)` → 1, `sizeof(int *)` / `sizeof(char *)` → 8

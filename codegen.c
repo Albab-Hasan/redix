@@ -11,6 +11,7 @@ static char loop_break_label[64];
 static char loop_cont_label[64];
 
 #define MAX_VARS 128
+#define MAX_DIMS 4
 static struct var_entry {
 	char *name;
 	int offset;      /* negative offset from rbp */
@@ -20,6 +21,8 @@ static struct var_entry {
 	int is_unsigned;
 	int is_fptr;     /* 8 byte slot holding a function address not a data pointer not a long */
 	int elem_size;   /* 1 for char 4 for int 8 for long */
+	int dims[MAX_DIMS];
+	int ndims;       /* 0 when the name is not an array */
 	char struct_type[64];
 } var_map[MAX_VARS];
 static int var_count;
@@ -37,6 +40,8 @@ static struct glob_entry {
 	int is_ptr;
 	int is_array;
 	int elem_size;
+	int dims[MAX_DIMS];
+	int ndims;
 	char struct_type[64];
 } global_map[MAX_GLOBALS];
 static int global_count;
@@ -112,6 +117,33 @@ static int is_global(const char *name)
 	return lookup_global(name) != NULL;
 }
 
+/* the dims past the first hang off the size node so the shape reads left to right from there */
+static int dim_list(struct ast_node *size, int *dims)
+{
+	int i;
+
+	if (size->child_count + 1 > MAX_DIMS) {
+		fprintf(stderr, "codegen: too many array dimensions\n");
+		exit(1);
+	}
+	dims[0] = atoi(size->value);
+	for (i = 0; i < size->child_count; i++)
+		dims[i + 1] = atoi(size->children[i]->value);
+	return size->child_count + 1;
+}
+
+static int dim_total(struct ast_node *size)
+{
+	int dims[MAX_DIMS];
+	int nd = dim_list(size, dims);
+	int total = 1;
+	int i;
+
+	for (i = 0; i < nd; i++)
+		total *= dims[i];
+	return total;
+}
+
 static void declare_global(const char *name, int is_ptr, int is_array,
 		int elem_size)
 {
@@ -119,8 +151,17 @@ static void declare_global(const char *name, int is_ptr, int is_array,
 	global_map[global_count].is_ptr = is_ptr;
 	global_map[global_count].is_array = is_array;
 	global_map[global_count].elem_size = elem_size;
+	global_map[global_count].ndims = 0;
 	global_map[global_count].struct_type[0] = '\0';
 	global_count++;
+}
+
+static void declare_global_array(const char *name, struct ast_node *size,
+		int elem_size)
+{
+	declare_global(name, 1, 1, elem_size);
+	global_map[global_count - 1].ndims =
+			dim_list(size, global_map[global_count - 1].dims);
 }
 
 static void declare_global_struct(const char *name, const char *type_name,
@@ -167,6 +208,7 @@ static int declare_var(const char *name, int is_ptr, int is_unsigned, int elem_s
 	var_map[var_count].is_unsigned = is_unsigned;
 	var_map[var_count].is_fptr = 0;
 	var_map[var_count].elem_size = elem_size;
+	var_map[var_count].ndims = 0;
 	var_map[var_count].struct_type[0] = '\0';
 	var_count++;
 	return stack_offset;
@@ -183,6 +225,7 @@ static int declare_fptr_var(const char *name)
 	var_map[var_count].is_unsigned = 0;
 	var_map[var_count].is_fptr = 1;
 	var_map[var_count].elem_size = 8;
+	var_map[var_count].ndims = 0;
 	var_map[var_count].struct_type[0] = '\0';
 	var_count++;
 	return stack_offset;
@@ -205,6 +248,7 @@ static int declare_struct_var(const char *name, const char *type_name)
 	var_map[var_count].is_struct = 1;
 	var_map[var_count].is_fptr = 0;
 	var_map[var_count].elem_size = 4;
+	var_map[var_count].ndims = 0;
 	strncpy(var_map[var_count].struct_type, type_name, 63);
 	var_map[var_count].struct_type[63] = '\0';
 	var_count++;
@@ -223,6 +267,7 @@ static int declare_struct_ptr_var(const char *name, const char *type_name)
 	/* stepping a struct pointer moves a whole struct not 4 bytes */
 	var_map[var_count].elem_size =
 			struct_types[lookup_struct(type_name)].total_size;
+	var_map[var_count].ndims = 0;
 	strncpy(var_map[var_count].struct_type, type_name, 63);
 	var_map[var_count].struct_type[63] = '\0';
 	var_count++;
@@ -248,6 +293,7 @@ static int declare_struct_array_var(const char *name, const char *type_name,
 	var_map[var_count].is_unsigned = 0;
 	var_map[var_count].is_fptr = 0;
 	var_map[var_count].elem_size = esz;
+	var_map[var_count].ndims = 0;
 	strncpy(var_map[var_count].struct_type, type_name, 63);
 	var_map[var_count].struct_type[63] = '\0';
 	var_count++;
@@ -255,10 +301,13 @@ static int declare_struct_array_var(const char *name, const char *type_name,
 }
 
 /* padded to 8 so the slots placed after the array stay aligned */
-static int declare_array(const char *name, int size, int elem_size)
+static int declare_array(const char *name, int *dims, int ndims, int elem_size)
 {
-	int bytes = size * elem_size;
+	int bytes = elem_size;
+	int i;
 
+	for (i = 0; i < ndims; i++)
+		bytes *= dims[i];
 	if (bytes % 8 != 0)
 		bytes += 8 - (bytes % 8);
 	stack_offset -= bytes;
@@ -269,6 +318,9 @@ static int declare_array(const char *name, int size, int elem_size)
 	var_map[var_count].is_struct = 0;
 	var_map[var_count].is_fptr = 0;
 	var_map[var_count].elem_size = elem_size;
+	var_map[var_count].ndims = ndims;
+	for (i = 0; i < ndims; i++)
+		var_map[var_count].dims[i] = dims[i];
 	var_map[var_count].struct_type[0] = '\0';
 	var_count++;
 	return stack_offset;
@@ -708,6 +760,79 @@ static int expr_is_long(struct ast_node *node)
 
 static int expr_deref_size(struct ast_node *node);
 
+/* returns how many dims of an array expression are still unindexed
+ * 0 means plain pointer rules apply */
+static int expr_dims(struct ast_node *node, int *dims, int *esz)
+{
+	struct var_entry *v;
+	struct glob_entry *g;
+	int inner[MAX_DIMS];
+	int inner_esz;
+	int nd;
+	int i;
+
+	switch (node->type) {
+	case NODE_VAR:
+		g = lookup_global(node->value);
+		if (g) {
+			if (!g->ndims)
+				return 0;
+			for (i = 0; i < g->ndims; i++)
+				dims[i] = g->dims[i];
+			*esz = g->elem_size;
+			return g->ndims;
+		}
+		v = try_lookup_var(node->value);
+		if (!v || !v->ndims)
+			return 0;
+		for (i = 0; i < v->ndims; i++)
+			dims[i] = v->dims[i];
+		*esz = v->elem_size;
+		return v->ndims;
+	case NODE_DEREF:
+		/* one index peels the outermost dim off and anything below stays an address */
+		nd = expr_dims(node->children[0], inner, esz);
+		if (nd < 2)
+			return 0;
+		for (i = 1; i < nd; i++)
+			dims[i - 1] = inner[i];
+		return nd - 1;
+	case NODE_BINARY:
+		if (node->value[1] != '\0')
+			return 0;
+		if (node->value[0] != '+' && node->value[0] != '-')
+			return 0;
+		nd = expr_dims(node->children[0], dims, esz);
+		if (nd) {
+			/* array minus array is an element count not an address */
+			if (expr_dims(node->children[1], inner, &inner_esz))
+				return 0;
+			return nd;
+		}
+		return expr_dims(node->children[1], dims, esz);
+	default:
+		return 0;
+	}
+}
+
+/* byte step of one index at this rank so every dim below the first times the element size */
+static int expr_index_stride(struct ast_node *node)
+{
+	int dims[MAX_DIMS];
+	int esz;
+	int nd;
+	int stride;
+	int i;
+
+	nd = expr_dims(node, dims, &esz);
+	if (nd == 0)
+		return 0;
+	stride = esz;
+	for (i = 1; i < nd; i++)
+		stride *= dims[i];
+	return stride;
+}
+
 /* 4 for int* 1 for char* the struct size for struct* 0 if not a pointer */
 static int expr_ptr_scale(struct ast_node *node)
 {
@@ -717,6 +842,12 @@ static int expr_ptr_scale(struct ast_node *node)
 	const char *t;
 	int l;
 	int r;
+	int stride;
+
+	/* a multi dim array steps a whole row so its stride beats the plain element size */
+	stride = expr_index_stride(node);
+	if (stride)
+		return stride;
 
 	switch (node->type) {
 	case NODE_VAR:
@@ -945,8 +1076,13 @@ static int expr_deref_size(struct ast_node *node)
 static void gen_deref(struct ast_node *node)
 {
 	int esz = expr_deref_size(node->children[0]);
+	int dims[MAX_DIMS];
+	int desz;
 
 	gen_expression(node->children[0]);
+	/* a partly indexed multi dim array is a row address so there is nothing to load yet */
+	if (expr_dims(node, dims, &desz) > 0)
+		return;
 	if (esz == 1)
 		emit("\tmovsbl (%%rax), %%eax");
 	else
@@ -1270,8 +1406,11 @@ static void gen_array_decl(struct ast_node *node)
 {
 	int i;
 	int base;
+	int dims[MAX_DIMS];
+	int nd;
 
-	base = declare_array(node->value, atoi(node->children[0]->value), 4);
+	nd = dim_list(node->children[0], dims);
+	base = declare_array(node->value, dims, nd, 4);
 	for (i = 1; i < node->child_count; i++) {
 		gen_expression(node->children[i]);
 		emit("\tmovl %%eax, %d(%%rbp)", base + (i - 1) * 4);
@@ -1282,8 +1421,11 @@ static void gen_char_array_decl(struct ast_node *node)
 {
 	int i;
 	int base;
+	int dims[MAX_DIMS];
+	int nd;
 
-	base = declare_array(node->value, atoi(node->children[0]->value), 1);
+	nd = dim_list(node->children[0], dims);
+	base = declare_array(node->value, dims, nd, 1);
 	for (i = 1; i < node->child_count; i++) {
 		gen_expression(node->children[i]);
 		emit("\tmovb %%al, %d(%%rbp)", base + (i - 1));
@@ -1544,14 +1686,14 @@ static int count_stack_bytes(struct ast_node *node)
 			|| node->type == NODE_FPTR_DECLARATION)
 		return 8;
 	if (node->type == NODE_ARRAY_DECL) {
-		n = atoi(node->children[0]->value);
+		n = dim_total(node->children[0]);
 		bytes = n * 4;
 		if (bytes % 8 != 0)
 			bytes += 8 - (bytes % 8);
 		return bytes;
 	}
 	if (node->type == NODE_CHAR_ARRAY_DECL) {
-		n = atoi(node->children[0]->value);
+		n = dim_total(node->children[0]);
 		bytes = n * 1;
 		if (bytes % 8 != 0)
 			bytes += 8 - (bytes % 8);
@@ -1762,7 +1904,7 @@ static void gen_global(struct ast_node *node)
 		emit("\t.zero %d", bytes);
 		break;
 	default:
-		bytes = atoi(node->children[0]->value);
+		bytes = dim_total(node->children[0]);
 		if (node->type == NODE_GLOBAL_ARRAY)
 			bytes = bytes * 4;
 		emit("\t.align 8");
@@ -1820,10 +1962,12 @@ static void gen_program(struct ast_node *node)
 			declare_global(node->children[i]->value, 1, 0, 1);
 			break;
 		case NODE_GLOBAL_ARRAY:
-			declare_global(node->children[i]->value, 1, 1, 4);
+			declare_global_array(node->children[i]->value,
+					node->children[i]->children[0], 4);
 			break;
 		case NODE_GLOBAL_CHAR_ARRAY:
-			declare_global(node->children[i]->value, 1, 1, 1);
+			declare_global_array(node->children[i]->value,
+					node->children[i]->children[0], 1);
 			break;
 		case NODE_GLOBAL_STRUCT:
 			declare_global_struct(node->children[i]->children[0]->value,
