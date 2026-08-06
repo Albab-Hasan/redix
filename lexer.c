@@ -278,6 +278,51 @@ static void scan_identifier(const char *source, int *pos,
 	tokens[(*ntokens)++] = (struct token){ type, word };
 }
 
+/* only the named escapes so far no octal or hex forms */
+static int decode_escape(char c)
+{
+	switch (c) {
+	case 'n':	return '\n';
+	case 't':	return '\t';
+	case 'r':	return '\r';
+	case '0':	return '\0';
+	case 'a':	return '\a';
+	case 'b':	return '\b';
+	case 'f':	return '\f';
+	case 'v':	return '\v';
+	case '\\':	return '\\';
+	case '\'':	return '\'';
+	case '"':	return '"';
+	}
+	fprintf(stderr, "redix: unknown escape '\\%c'\n", c);
+	exit(1);
+}
+
+/* the decoded byte becomes a plain number token so the parser
+ * needs no char literal case and case labels keep working */
+static void scan_char(const char *source, int *pos,
+		struct token *tokens, int *ntokens)
+{
+	char buf[16];
+	int value;
+
+	(*pos)++;
+	if (source[*pos] == '\\') {
+		(*pos)++;
+		value = decode_escape(source[(*pos)++]);
+	} else {
+		value = source[(*pos)++];
+	}
+	if (source[*pos] != '\'') {
+		fprintf(stderr, "redix: unterminated character literal\n");
+		exit(1);
+	}
+	(*pos)++;
+	sprintf(buf, "%d", value);
+	tokens[(*ntokens)++] = (struct token){ TOKEN_NUMBER, strdup(buf) };
+}
+
+/* escapes stay raw text since the assembler decodes them in .string */
 static void scan_string(const char *source, int *pos,
 		struct token *tokens, int *ntokens)
 {
@@ -500,6 +545,9 @@ struct token *lexer_tokenize(const char *source, int *count)
 			break;
 		case '"':
 			scan_string(source, &position, tokens, &ntokens);
+			break;
+		case '\'':
+			scan_char(source, &position, tokens, &ntokens);
 			break;
 		case '#':
 			scan_define(source, &position);
