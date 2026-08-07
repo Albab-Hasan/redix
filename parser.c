@@ -552,6 +552,21 @@ static void parse_init_list(struct ast_node *node, int *count)
 	expect(TOKEN_RBRACE);
 }
 
+/* only the outermost dim can be inferred so the rest divide the count */
+static void patch_inferred_size(struct ast_node *size, int init_count)
+{
+	char buf[16];
+	int rest;
+	int i;
+
+	rest = 1;
+	for (i = 0; i < size->child_count; i++)
+		rest *= atoi(size->children[i]->value);
+	sprintf(buf, "%d", init_count / rest);
+	free(size->value);
+	size->value = strdup(buf);
+}
+
 /* trailing ; stays unconsumed so the for loop init can reuse this */
 static struct ast_node *parse_declaration_inner(void)
 {
@@ -565,9 +580,6 @@ static struct ast_node *parse_declaration_inner(void)
 	int is_long;
 	int infer_size;
 	int init_count;
-	int rest;
-	int i;
-	char sizebuf[16];
 
 	is_char = 0;
 	is_unsigned = 0;
@@ -617,7 +629,7 @@ static struct ast_node *parse_declaration_inner(void)
 		position++;
 	}
 	name = expect(TOKEN_IDENTIFIER);
-	if (!is_ptr && current()->type == TOKEN_LBRACKET) {
+	if (current()->type == TOKEN_LBRACKET) {
 		position++;
 		infer_size = 0;
 		if (current()->type == TOKEN_RBRACKET) {
@@ -628,8 +640,12 @@ static struct ast_node *parse_declaration_inner(void)
 			size_tok = expect(TOKEN_NUMBER);
 		}
 		expect(TOKEN_RBRACKET);
-		node = make_node(is_char ? NODE_CHAR_ARRAY_DECL : NODE_ARRAY_DECL,
-				name->value);
+		if (is_ptr)
+			node = make_node(is_char ? NODE_CHAR_PTR_ARRAY_DECL
+					: NODE_PTR_ARRAY_DECL, name->value);
+		else
+			node = make_node(is_char ? NODE_CHAR_ARRAY_DECL : NODE_ARRAY_DECL,
+					name->value);
 		size = make_node(NODE_NUMBER, infer_size ? "0" : size_tok->value);
 		add_child(node, size);
 		parse_extra_dims(size);
@@ -637,15 +653,8 @@ static struct ast_node *parse_declaration_inner(void)
 			position++;
 			init_count = 0;
 			parse_init_list(node, &init_count);
-			if (infer_size) {
-				/* only the outermost dim can be inferred so the rest divide the count */
-				rest = 1;
-				for (i = 0; i < size->child_count; i++)
-					rest *= atoi(size->children[i]->value);
-				sprintf(sizebuf, "%d", init_count / rest);
-				free(size->value);
-				size->value = strdup(sizebuf);
-			}
+			if (infer_size)
+				patch_inferred_size(size, init_count);
 		}
 		return node;
 	}
@@ -906,6 +915,7 @@ static struct ast_node *parse_global_struct(void)
 	struct token *size_tok;
 	struct ast_node *node;
 	int is_ptr;
+	int init_count;
 
 	position++;
 	tname = expect(TOKEN_IDENTIFIER);
@@ -920,16 +930,26 @@ static struct ast_node *parse_global_struct(void)
 		position++;
 		size_tok = expect(TOKEN_NUMBER);
 		expect(TOKEN_RBRACKET);
-		expect(TOKEN_SEMICOLON);
 		node = make_node(NODE_GLOBAL_STRUCT_ARRAY, tname->value);
 		add_child(node, make_node(NODE_VAR, vname->value));
 		add_child(node, make_node(NODE_NUMBER, size_tok->value));
+		if (current()->type == TOKEN_ASSIGN) {
+			position++;
+			init_count = 0;
+			parse_init_list(node, &init_count);
+		}
+		expect(TOKEN_SEMICOLON);
 		return node;
 	}
-	expect(TOKEN_SEMICOLON);
 	node = make_node(is_ptr ? NODE_GLOBAL_STRUCT_PTR : NODE_GLOBAL_STRUCT,
 			tname->value);
 	add_child(node, make_node(NODE_VAR, vname->value));
+	if (current()->type == TOKEN_ASSIGN) {
+		position++;
+		init_count = 0;
+		parse_init_list(node, &init_count);
+	}
+	expect(TOKEN_SEMICOLON);
 	return node;
 }
 
@@ -1118,6 +1138,8 @@ static struct ast_node *parse_global(void)
 	struct ast_node *size;
 	int is_char;
 	int is_ptr;
+	int infer_size;
+	int init_count;
 
 	is_char = (current()->type == TOKEN_CHAR);
 	position++;
@@ -1127,33 +1149,48 @@ static struct ast_node *parse_global(void)
 		position++;
 	}
 	name = expect(TOKEN_IDENTIFIER);
-	if (!is_ptr && current()->type == TOKEN_LBRACKET) {
+	if (current()->type == TOKEN_LBRACKET) {
 		position++;
-		size_tok = expect(TOKEN_NUMBER);
+		infer_size = 0;
+		if (current()->type == TOKEN_RBRACKET) {
+			infer_size = 1;
+			size_tok = NULL;
+		} else {
+			size_tok = expect(TOKEN_NUMBER);
+		}
 		expect(TOKEN_RBRACKET);
-		node = make_node(is_char ? NODE_GLOBAL_CHAR_ARRAY : NODE_GLOBAL_ARRAY,
-				name->value);
-		size = make_node(NODE_NUMBER, size_tok->value);
+		if (is_ptr)
+			node = make_node(is_char ? NODE_GLOBAL_CHAR_PTR_ARRAY
+					: NODE_GLOBAL_PTR_ARRAY, name->value);
+		else
+			node = make_node(is_char ? NODE_GLOBAL_CHAR_ARRAY
+					: NODE_GLOBAL_ARRAY, name->value);
+		size = make_node(NODE_NUMBER, infer_size ? "0" : size_tok->value);
 		add_child(node, size);
 		parse_extra_dims(size);
-		expect(TOKEN_SEMICOLON);
-		return node;
-	}
-	if (is_ptr) {
-		/* global pointers start out null no initializer allowed */
-		node = make_node(is_char ? NODE_GLOBAL_CHAR_PTR : NODE_GLOBAL_PTR,
-				name->value);
-		expect(TOKEN_SEMICOLON);
-		return node;
-	}
-	node = make_node(NODE_GLOBAL, name->value);
-	if (current()->type == TOKEN_ASSIGN) {
-		position++;
-		if (current()->type != TOKEN_NUMBER) {
-			fprintf(stderr, "parser: global initializer must be a constant\n");
+		if (current()->type == TOKEN_ASSIGN) {
+			position++;
+			init_count = 0;
+			parse_init_list(node, &init_count);
+			if (infer_size)
+				patch_inferred_size(size, init_count);
+		} else if (infer_size) {
+			fprintf(stderr, "parser: global array '%s' needs a size or an initializer\n",
+					name->value);
 			exit(1);
 		}
-		add_child(node, make_node(NODE_NUMBER, tokens[position++].value));
+		expect(TOKEN_SEMICOLON);
+		return node;
+	}
+	if (is_ptr)
+		node = make_node(is_char ? NODE_GLOBAL_CHAR_PTR : NODE_GLOBAL_PTR,
+				name->value);
+	else
+		node = make_node(NODE_GLOBAL, name->value);
+	/* anything non constant gets rejected in codegen where the fold happens */
+	if (current()->type == TOKEN_ASSIGN) {
+		position++;
+		add_child(node, parse_expression());
 	}
 	expect(TOKEN_SEMICOLON);
 	return node;

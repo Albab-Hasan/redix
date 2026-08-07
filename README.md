@@ -26,7 +26,8 @@ code generation. Currently it supports:
 - pointer arithmetic: `p + n`, `p - n`, `p++`, `p--`, pointer difference, and `p[i]` indexing
 - arrays: `int a[N]`, element access `a[i]`, brace initializers `int a[3] = {1, 2, 3}` and size-inferred `int a[] = {1, 2, 3}`, decay to pointer when passed to functions
 - N-dimensional arrays: `int a[2][3]`, `char c[2][3][4]` as locals and globals, element access `a[i][j]`, row-major layout, nested brace initializers `int a[2][3] = {{1, 2, 3}, {4, 5, 6}}` (flat lists work too), outer size inferred from the initializer with `int a[][2] = {1, 2, 3, 4}`, and a partial index like `a[i]` gives the row address so it can be passed as `int *`
-- global arrays and pointers: `int a[N]`, `char buf[N]`, `int *p`, `char *s` at file scope, zero-initialized
+- arrays of pointers: `char *a[N]`, `int *a[N]` as locals and globals, with brace initializers `char *names[3] = {"aa", "bb", "cc"}`; each slot is 8 bytes, `a[i]` yields the pointer and `a[i][j]` indexes through it
+- global arrays and pointers: `int a[N]`, `char buf[N]`, `int *p`, `char *s` at file scope, with initializers `int a[4] = {1, 2, 3, 4}`, size-inferred `int a[] = {1, 2}`, `char *s = "hi"` and `int *p = &g`; scalar initializers fold constant expressions at compile time (`2 * 3 + 1`, enum constants, `sizeof`), array elements left out of the list stay zero, and anything declared without an initializer is zeroed
 - `char` type: declarations, assignments, arithmetic, arrays `char a[N]`, pointer `char *p`, function parameters
 - character literals: `'a'`, `'0'`, `' '` and the escapes `\n`, `\t`, `\r`, `\0`, `\a`, `\b`, `\f`, `\v`, `\\`, `\'`, `\"`; the lexer decodes each one to its byte value and emits it as a number, so a character literal works anywhere a number does, including `case 'a':` labels and array initializers `char s[] = {'h', 'i', '\0'}`; octal `'\101'` and hex `'\x41'` escapes are not supported
 - `sizeof(type)`: `sizeof(int)` → 4, `sizeof(char)` → 1, `sizeof(int *)` / `sizeof(char *)` → 8
@@ -34,7 +35,7 @@ code generation. Currently it supports:
 - struct pointer fields: `struct node *next` inside a struct, including self-referential types, so linked lists and trees work
 - member chains: `p->next->val`, `a[i].x`, `s.p->f`; every postfix step builds on the address of the previous one
 - struct arrays: `struct T a[N]` as locals and globals, element access `a[i].field`, decay to a pointer when passed to functions
-- global structs: `struct T g;`, `struct T *gp;` and `struct T a[N];` at file scope, zero-initialized
+- global structs: `struct T g;`, `struct T *gp;` and `struct T a[N];` at file scope, with brace initializers laid out field by field with real padding, so the keyword-table shape `struct kw table[3] = { {"int", 11}, {"char", 22} };` works; pointer fields take a string literal, `&other` or `0`, and a struct array needs an explicit size since the parser does not know the field count
 - struct pointer arithmetic: `p + n`, `p++`, `p--` step by the full struct size
 - `sizeof(struct T)` reports the real laid-out size, `sizeof(struct T *)` → 8
 - address of an element or member: `&a[i]`, `&s.field`, `&p->field`
