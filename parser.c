@@ -68,6 +68,46 @@ static struct enum_entry *lookup_enum(const char *name)
 static struct ast_node *parse_statement(void);
 static struct ast_node *parse_expression(void);
 
+/* the returned string is the same spelling codegen matches on for casts */
+static const char *parse_type_name(void)
+{
+	int is_char;
+	int is_long;
+	int is_unsigned;
+	int is_ptr;
+
+	is_char = 0;
+	is_long = 0;
+	is_unsigned = 0;
+	is_ptr = 0;
+	if (current()->type == TOKEN_UNSIGNED) {
+		is_unsigned = 1;
+		position++;
+	}
+	if (current()->type == TOKEN_LONG) {
+		is_long = 1;
+		position++;
+		if (current()->type == TOKEN_INT)
+			position++;
+	} else if (current()->type == TOKEN_INT) {
+		position++;
+	} else if (current()->type == TOKEN_CHAR) {
+		is_char = 1;
+		position++;
+	}
+	if (current()->type == TOKEN_STAR) {
+		is_ptr = 1;
+		position++;
+	}
+	if      (is_ptr && is_char)        return "char*";
+	else if (is_ptr)                   return "int*";
+	else if (is_long)                  return "long";
+	else if (is_unsigned && is_char)   return "unsigned_char";
+	else if (is_unsigned)              return "unsigned";
+	else if (is_char)                  return "char";
+	return "int";
+}
+
 static struct ast_node *parse_primary(void)
 {
 	struct token *tok;
@@ -195,6 +235,20 @@ static struct ast_node *parse_unary(void)
 		add_child(node, parse_unary());
 		return node;
 	}
+	/* va_arg needs its own node since the second argument is a type not an expression */
+	if (current()->type == TOKEN_VA_ARG) {
+		struct ast_node *va;
+		struct token *ap;
+
+		position++;
+		expect(TOKEN_LPAREN);
+		ap = expect(TOKEN_IDENTIFIER);
+		expect(TOKEN_COMMA);
+		va = make_node(NODE_VA_ARG, (char *)parse_type_name());
+		expect(TOKEN_RPAREN);
+		add_child(va, make_node(NODE_VAR, ap->value));
+		return va;
+	}
 	if (current()->type == TOKEN_SIZEOF) {
 		int sz;
 		char buf[8];
@@ -238,43 +292,10 @@ static struct ast_node *parse_unary(void)
 				|| tokens[position + 1].type == TOKEN_UNSIGNED)) {
 		struct ast_node *node;
 		const char *cast_type;
-		int is_char;
-		int is_long;
-		int is_unsigned;
-		int is_ptr;
 
 		position++; /* consume ( */
-		is_char = 0;
-		is_long = 0;
-		is_unsigned = 0;
-		is_ptr = 0;
-		if (current()->type == TOKEN_UNSIGNED) {
-			is_unsigned = 1;
-			position++;
-		}
-		if (current()->type == TOKEN_LONG) {
-			is_long = 1;
-			position++;
-			if (current()->type == TOKEN_INT)
-				position++;
-		} else if (current()->type == TOKEN_INT) {
-			position++;
-		} else if (current()->type == TOKEN_CHAR) {
-			is_char = 1;
-			position++;
-		}
-		if (current()->type == TOKEN_STAR) {
-			is_ptr = 1;
-			position++;
-		}
+		cast_type = parse_type_name();
 		expect(TOKEN_RPAREN);
-		if      (is_ptr && is_char)        cast_type = "char*";
-		else if (is_ptr)                   cast_type = "int*";
-		else if (is_long)                  cast_type = "long";
-		else if (is_unsigned && is_char)   cast_type = "unsigned_char";
-		else if (is_unsigned)              cast_type = "unsigned";
-		else if (is_char)                  cast_type = "char";
-		else                               cast_type = "int";
 		node = make_node(NODE_CAST, (char *)cast_type);
 		add_child(node, parse_unary());
 		return node;
@@ -985,6 +1006,33 @@ static void parse_enum_def(void)
 	expect(TOKEN_SEMICOLON);
 }
 
+static struct ast_node *parse_va_list_decl(void)
+{
+	struct token *name;
+
+	position++;
+	name = expect(TOKEN_IDENTIFIER);
+	expect(TOKEN_SEMICOLON);
+	return make_node(NODE_VA_LIST_DECL, name->value);
+}
+
+/* the last named parameter gets dropped since codegen counts named params itself */
+static struct ast_node *parse_va_call(enum node_type type, int takes_last)
+{
+	struct token *ap;
+
+	position++;
+	expect(TOKEN_LPAREN);
+	ap = expect(TOKEN_IDENTIFIER);
+	if (takes_last) {
+		expect(TOKEN_COMMA);
+		expect(TOKEN_IDENTIFIER);
+	}
+	expect(TOKEN_RPAREN);
+	expect(TOKEN_SEMICOLON);
+	return make_node(type, ap->value);
+}
+
 static struct ast_node *parse_statement(void)
 {
 	struct ast_node *node;
@@ -1004,6 +1052,9 @@ static struct ast_node *parse_statement(void)
 	case TOKEN_CONTINUE:	return parse_simple_keyword(NODE_CONTINUE);
 	case TOKEN_DO:		return parse_do_while();
 	case TOKEN_SWITCH:	return parse_switch();
+	case TOKEN_VA_LIST:	return parse_va_list_decl();
+	case TOKEN_VA_START:	return parse_va_call(NODE_VA_START, 1);
+	case TOKEN_VA_END:	return parse_va_call(NODE_VA_END, 0);
 	default:
 		node = parse_expression();
 		expect(TOKEN_SEMICOLON);
@@ -1040,6 +1091,20 @@ static struct ast_node *parse_function(void)
 		add_child(node, make_node(NODE_STRUCT_RET, sret_type->value));
 	expect(TOKEN_LPAREN);
 	while (current()->type != TOKEN_RPAREN) {
+		if (current()->type == TOKEN_ELLIPSIS) {
+			position++;
+			add_child(node, make_node(NODE_VARARG, NULL));
+			continue;
+		}
+		/* a va_list argument decays to a pointer so it rides in a pointer slot */
+		if (current()->type == TOKEN_VA_LIST) {
+			position++;
+			pname = expect(TOKEN_IDENTIFIER);
+			add_child(node, make_node(NODE_PTR_DECLARATION, pname->value));
+			if (current()->type == TOKEN_COMMA)
+				position++;
+			continue;
+		}
 		/* function pointer param: type (*name)(param-types) */
 		if ((current()->type == TOKEN_INT || current()->type == TOKEN_CHAR
 				|| current()->type == TOKEN_VOID

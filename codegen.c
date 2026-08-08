@@ -78,6 +78,17 @@ static struct {
 static int sret_count;
 static char current_func_sret_type[64];
 
+/* call sites must zero al before a variadic callee so the registry has to reach them */
+#define MAX_VARARG 32
+static char *vararg_names[MAX_VARARG];
+static int vararg_count;
+
+/* 6 saved integer regs and the 4 fields the abi lays out for va_list */
+#define VA_SAVE_SIZE 48
+#define VA_LIST_SIZE 24
+static int current_va_save;     /* rbp offset of the register save area */
+static int current_va_gp_start; /* bytes of the save area the named params already ate */
+
 static int lookup_struct(const char *name)
 {
 	int i;
@@ -212,6 +223,25 @@ static int declare_var(const char *name, int is_ptr, int is_unsigned, int elem_s
 	var_map[var_count].is_unsigned = is_unsigned;
 	var_map[var_count].is_fptr = 0;
 	var_map[var_count].elem_size = elem_size;
+	var_map[var_count].elem_ptr = 0;
+	var_map[var_count].ndims = 0;
+	var_map[var_count].struct_type[0] = '\0';
+	var_count++;
+	return stack_offset;
+}
+
+/* is_array so the name leaqs to its own address which is exactly how va_list decays in c */
+static int declare_valist_var(const char *name)
+{
+	stack_offset -= VA_LIST_SIZE;
+	var_map[var_count].name = strdup(name);
+	var_map[var_count].offset = stack_offset;
+	var_map[var_count].is_ptr = 0;
+	var_map[var_count].is_array = 1;
+	var_map[var_count].is_struct = 0;
+	var_map[var_count].is_unsigned = 0;
+	var_map[var_count].is_fptr = 0;
+	var_map[var_count].elem_size = 8;
 	var_map[var_count].elem_ptr = 0;
 	var_map[var_count].ndims = 0;
 	var_map[var_count].struct_type[0] = '\0';
@@ -813,6 +843,7 @@ static int expr_is_long(struct ast_node *node)
 			if (expr_is_long(node->children[i])) return 1;
 		return 0;
 	case NODE_CAST:
+	case NODE_VA_ARG:
 		return strcmp(node->value, "long") == 0;
 	default:
 		return 0;
@@ -976,6 +1007,7 @@ static int expr_ptr_scale(struct ast_node *node)
 		/* indexing a pointer array yields a pointer so its pointee sets the next scale */
 		return expr_elem_ptr(node->children[0]);
 	case NODE_CAST:
+	case NODE_VA_ARG:
 		if (strcmp(node->value, "int*") == 0)  return 4;
 		if (strcmp(node->value, "char*") == 0) return 1;
 		return 0;
@@ -1283,6 +1315,87 @@ static void gen_fptr_call(struct ast_node *node, struct var_entry *fv)
 	emit("\tcall *%%rax");
 }
 
+static int is_vararg_func(const char *name)
+{
+	int i;
+
+	for (i = 0; i < vararg_count; i++)
+		if (strcmp(vararg_names[i], name) == 0)
+			return 1;
+	return 0;
+}
+
+static void gen_va_list_decl(struct ast_node *node)
+{
+	declare_valist_var(node->value);
+}
+
+static void gen_va_start(struct ast_node *node)
+{
+	struct var_entry *v;
+
+	v = lookup_var(node->value);
+	emit("\tmovl $%d, %d(%%rbp)", current_va_gp_start, v->offset);
+	/* parked past the save area so a float fetch takes the overflow path
+	 * instead of reading junk since no xmm reg ever gets saved */
+	emit("\tmovl $176, %d(%%rbp)", v->offset + 4);
+	/* stack args start above the saved rbp and the return address */
+	emit("\tleaq 16(%%rbp), %%rax");
+	emit("\tmovq %%rax, %d(%%rbp)", v->offset + 8);
+	emit("\tleaq %d(%%rbp), %%rax", current_va_save);
+	emit("\tmovq %%rax, %d(%%rbp)", v->offset + 16);
+}
+
+/* fields at 0 gp_offset 4 fp_offset 8 overflow_arg_area 16 reg_save_area */
+static void gen_va_arg(struct ast_node *node)
+{
+	struct var_entry *v;
+	int lbl;
+	int wide;
+
+	v = lookup_var(node->children[0]->value);
+	lbl = label_count++;
+	wide = strcmp(node->value, "long") == 0
+			|| strcmp(node->value, "int*") == 0
+			|| strcmp(node->value, "char*") == 0;
+
+	emit("\tmovl %d(%%rbp), %%eax", v->offset);
+	emit("\tcmpl $%d, %%eax", VA_SAVE_SIZE);
+	emit("\tjae .Lvaover%d", lbl);
+	/* movl into ecx zero extends so the byte count indexes the save area cleanly */
+	emit("\tmovq %d(%%rbp), %%rdx", v->offset + 16);
+	emit("\tmovl %%eax, %%ecx");
+	emit("\taddq %%rcx, %%rdx");
+	emit("\taddl $8, %%eax");
+	emit("\tmovl %%eax, %d(%%rbp)", v->offset);
+	emit("\tjmp .Lvaend%d", lbl);
+	emit(".Lvaover%d:", lbl);
+	emit("\tmovq %d(%%rbp), %%rdx", v->offset + 8);
+	emit("\tleaq 8(%%rdx), %%rax");
+	emit("\tmovq %%rax, %d(%%rbp)", v->offset + 8);
+	emit(".Lvaend%d:", lbl);
+	/* rdx holds the slot address and a char arrived already widened to int */
+	if (wide)
+		emit("\tmovq (%%rdx), %%rax");
+	else
+		emit("\tmovl (%%rdx), %%eax");
+}
+
+static void gen_push_arg(struct ast_node *arg, struct var_entry *sv, int nregs)
+{
+	if (nregs > 1) {
+		/* struct > 8B: push HIGH first (deeper) so LOW ends up on top */
+		emit("\tpushq %d(%%rbp)", sv->offset + 8);
+		emit("\tpushq %d(%%rbp)", sv->offset);
+	} else if (sv != NULL && sv->is_struct && !sv->is_array) {
+		/* struct <= 8B fits in one reg: single qword push */
+		emit("\tpushq %d(%%rbp)", sv->offset);
+	} else {
+		gen_expression(arg);
+		emit("\tpush %%rax");
+	}
+}
+
 static void gen_call(struct ast_node *node)
 {
 	static const char *arg_regs[] = {
@@ -1296,6 +1409,8 @@ static void gen_call(struct ast_node *node)
 	int nargs;
 	int total_regs;
 	int sidx;
+	int nstack;
+	int pad;
 
 	struct var_entry *fv;
 
@@ -1322,28 +1437,43 @@ static void gen_call(struct ast_node *node)
 		total_regs += nregs[i];
 	}
 
-	/* args go through the stack since evaluating a later arg could
-	 * itself be a call that clobbers the arg regs */
-	for (i = 0; i < nargs; i++) {
-		if (nregs[i] > 1) {
-			/* struct > 8B: push HIGH first (deeper) so LOW ends up on top */
-			emit("\tpushq %d(%%rbp)", svs[i]->offset + 8);
-			emit("\tpushq %d(%%rbp)", svs[i]->offset);
-		} else if (svs[i] != NULL && svs[i]->is_struct && !svs[i]->is_array) {
-			/* struct <= 8B fits in one reg: single qword push */
-			emit("\tpushq %d(%%rbp)", svs[i]->offset);
-		} else {
-			gen_expression(node->children[i]);
-			emit("\tpush %%rax");
+	nstack = total_regs > 6 ? total_regs - 6 : 0;
+	for (i = 0; i < nargs && nstack; i++)
+		if (nregs[i] > 1 && reg_base[i] < 6 && reg_base[i] + nregs[i] > 6) {
+			fprintf(stderr, "codegen: struct arg %d of '%s' straddles "
+					"the register and stack halves\n", i, node->value);
+			exit(1);
 		}
-	}
+
+	/* an odd number of stack args would leave rsp 8 off what the abi wants at call time */
+	pad = (nstack % 2) ? 8 : 0;
+	if (pad)
+		emit("\tsubq $8, %%rsp");
+
+	/* pushed last to first so the seventh arg ends up at the bottom of the block */
+	for (i = nargs - 1; i >= 0; i--)
+		if (reg_base[i] >= 6)
+			gen_push_arg(node->children[i], svs[i], nregs[i]);
+
+	/* reg args go through the stack too since evaluating a later arg could
+	 * itself be a call that clobbers the arg regs */
+	for (i = 0; i < nargs; i++)
+		if (reg_base[i] < 6)
+			gen_push_arg(node->children[i], svs[i], nregs[i]);
 	/* pop right-to-left so arg0 ends up in rdi
 	 * within each struct arg pop low bytes first (lowest reg) then high */
 	for (i = nargs - 1; i >= 0; i--) {
+		if (reg_base[i] >= 6)
+			continue;
 		for (j = 0; j < nregs[i]; j++)
 			emit("\tpop %s", arg_regs[reg_base[i] + j]);
 	}
+	/* al tells a variadic callee how many vector regs carry args and redix never uses any */
+	if (is_vararg_func(node->value))
+		emit("\tmovl $0, %%eax");
 	emit("\tcall %s", node->value);
+	if (nstack || pad)
+		emit("\taddq $%d, %%rsp", nstack * 8 + pad);
 }
 
 static void gen_string(struct ast_node *node)
@@ -1404,6 +1534,7 @@ static void gen_expression(struct ast_node *node)
 	case NODE_MEMBER_ASSIGN:
 	case NODE_PTR_MEMBER_ASSIGN:	gen_member_store(node);		break;
 	case NODE_CAST:			gen_cast(node);			break;
+	case NODE_VA_ARG:		gen_va_arg(node);		break;
 	case NODE_SIZEOF_STRUCT:
 		emit("\tmov $%d, %%eax",
 				struct_types[lookup_struct(node->value)].total_size);
@@ -1740,6 +1871,9 @@ static void gen_statement(struct ast_node *node)
 	case NODE_STRUCT_DECL:		gen_struct_decl(node);		break;
 	case NODE_STRUCT_PTR_DECL:	gen_struct_ptr_decl(node);	break;
 	case NODE_STRUCT_ARRAY_DECL:	gen_struct_array_decl(node);	break;
+	case NODE_VA_LIST_DECL:		gen_va_list_decl(node);		break;
+	case NODE_VA_START:		gen_va_start(node);		break;
+	case NODE_VA_END:		break;
 	case NODE_COMPOUND:		gen_compound(node);		break;
 	case NODE_IF:			gen_if(node);			break;
 	case NODE_WHILE:		gen_while(node);		break;
@@ -1767,6 +1901,7 @@ static void gen_statement(struct ast_node *node)
 	case NODE_PTR_MEMBER:
 	case NODE_PTR_MEMBER_ASSIGN:
 	case NODE_CAST:
+	case NODE_VA_ARG:
 	case NODE_SIZEOF_STRUCT:
 		gen_expression(node);
 		break;
@@ -1795,6 +1930,8 @@ static int count_stack_bytes(struct ast_node *node)
 			|| node->type == NODE_LONG_DECLARATION
 			|| node->type == NODE_FPTR_DECLARATION)
 		return 8;
+	if (node->type == NODE_VA_LIST_DECL)
+		return VA_LIST_SIZE;
 	if (node->type == NODE_ARRAY_DECL) {
 		n = dim_total(node->children[0]);
 		bytes = n * 4;
@@ -1858,6 +1995,7 @@ static void gen_function(struct ast_node *node)
 	int reg_idx;
 	int sidx;
 	int sz;
+	int is_variadic;
 
 	/* stale locals from the previous function must not resolve here */
 	var_count = 0;
@@ -1865,6 +2003,8 @@ static void gen_function(struct ast_node *node)
 	loop_break_label[0] = '\0';
 	loop_cont_label[0] = '\0';
 	current_func_sret_type[0] = '\0';
+	current_va_save = 0;
+	current_va_gp_start = 0;
 
 	has_sret = node->child_count > 0
 			&& node->children[0]->type == NODE_STRUCT_RET;
@@ -1877,6 +2017,10 @@ static void gen_function(struct ast_node *node)
 	/* body is always last child preceding children are params */
 	body = node->children[node->child_count - 1];
 	num_params = node->child_count - 1 - param_start;
+	/* the ... marker is always the last param so dropping it leaves the named ones */
+	is_variadic = num_params > 0
+			&& node->children[param_start + num_params - 1]->type == NODE_VARARG;
+	num_params -= is_variadic;
 
 	emit(".global %s", node->value);
 	emit("%s:", node->value);
@@ -1901,10 +2045,21 @@ static void gen_function(struct ast_node *node)
 	/* rounded up since the abi wants rsp 16 byte aligned at call time */
 	num_locals = count_stack_bytes(body);
 	alloc_size = param_bytes + num_locals;
+	if (is_variadic)
+		alloc_size += VA_SAVE_SIZE;
 	if (alloc_size > 0) {
 		if (alloc_size % 16 != 0)
 			alloc_size += 16 - (alloc_size % 16);
 		emit("\tsubq $%d, %%rsp", alloc_size);
+	}
+
+	/* all six get saved even the named ones since va_start indexes from gp_offset */
+	if (is_variadic) {
+		stack_offset -= VA_SAVE_SIZE;
+		current_va_save = stack_offset;
+		for (i = 0; i < 6; i++)
+			emit("\tmovq %s, %d(%%rbp)", ptr_param_regs[i],
+					current_va_save + i * 8);
 	}
 
 	/* params get stack slots so they read and write like any other local */
@@ -1954,6 +2109,7 @@ static void gen_function(struct ast_node *node)
 			emit("\tmovl %s, %d(%%rbp)", param_regs[reg_idx], offset);
 		reg_idx++;
 	}
+	current_va_gp_start = reg_idx * 8;
 
 	gen_statement(body);
 
@@ -2138,6 +2294,7 @@ static void gen_program(struct ast_node *node)
 
 	sret_count = 0;
 	func_count = 0;
+	vararg_count = 0;
 	for (i = 0; i < node->child_count; i++)
 		if (node->children[i]->type == NODE_STRUCT_DEF)
 			gen_struct_def(node->children[i]);
@@ -2148,6 +2305,18 @@ static void gen_program(struct ast_node *node)
 				|| node->children[i]->type == NODE_PROTO)
 				&& func_count < MAX_FUNCS)
 			func_names[func_count++] = node->children[i]->value;
+
+	/* register variadic functions so call sites know to zero al */
+	for (i = 0; i < node->child_count; i++) {
+		struct ast_node *fn = node->children[i];
+		int j;
+		if (fn->type != NODE_FUNCTION && fn->type != NODE_PROTO)
+			continue;
+		for (j = 0; j < fn->child_count; j++)
+			if (fn->children[j]->type == NODE_VARARG
+					&& vararg_count < MAX_VARARG)
+				vararg_names[vararg_count++] = fn->value;
+	}
 
 	/* register struct-returning functions so call sites can find them */
 	for (i = 0; i < node->child_count; i++) {

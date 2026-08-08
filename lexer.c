@@ -77,6 +77,11 @@ const char *token_type_name(enum token_type type)
 	case TOKEN_ENUM:		return "TOKEN_ENUM";
 	case TOKEN_UNSIGNED:		return "TOKEN_UNSIGNED";
 	case TOKEN_LONG:		return "TOKEN_LONG";
+	case TOKEN_ELLIPSIS:		return "TOKEN_ELLIPSIS";
+	case TOKEN_VA_LIST:		return "TOKEN_VA_LIST";
+	case TOKEN_VA_START:		return "TOKEN_VA_START";
+	case TOKEN_VA_ARG:		return "TOKEN_VA_ARG";
+	case TOKEN_VA_END:		return "TOKEN_VA_END";
 	}
 	return "UNKNOWN";
 }
@@ -105,6 +110,10 @@ static const struct {
 	{ "enum",     TOKEN_ENUM },
 	{ "unsigned", TOKEN_UNSIGNED },
 	{ "long",     TOKEN_LONG },
+	{ "va_list",  TOKEN_VA_LIST },
+	{ "va_start", TOKEN_VA_START },
+	{ "va_arg",   TOKEN_VA_ARG },
+	{ "va_end",   TOKEN_VA_END },
 };
 
 #define NKEYWORDS (sizeof(keywords) / sizeof(keywords[0]))
@@ -540,6 +549,11 @@ struct token *lexer_tokenize(const char *source, int *count)
 			position++;
 			break;
 		case '.':
+			if (source[position + 1] == '.' && source[position + 2] == '.') {
+				tokens[ntokens++] = make_token(TOKEN_ELLIPSIS, "...");
+				position += 3;
+				break;
+			}
 			tokens[ntokens++] = make_token(TOKEN_DOT, ".");
 			position++;
 			break;

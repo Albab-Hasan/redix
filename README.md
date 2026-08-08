@@ -19,7 +19,7 @@ code generation. Currently it supports:
 - `while` loops
 - `for` loops
 - `break` and `continue`
-- multiple functions with up to 6 parameters and calls
+- multiple functions with up to 6 named parameters; a call site can pass more than 6 arguments, with the extras going on the stack and `rsp` kept 16-byte aligned
 - function prototypes: `int foo(int a);` forward-declares a function, enabling calls before the definition and mutual recursion
 - `void` return type and bare `return;`
 - pointers: `int *p`, address-of `&x`, dereference `*p`, pointer parameters
@@ -50,6 +50,7 @@ code generation. Currently it supports:
 - struct value parameters: `func(struct T p)` passes the struct in one register (≤8 bytes) or two registers (≤16 bytes); struct value args must be local variable references
 - type casting: `(int)`, `(char)`, `(long)`, `(unsigned)`, `(unsigned char)`, `(int *)`, `(char *)`; truncates or extends the value to the target type; `(char)` sign-extends from byte, `(unsigned char)` zero-extends, `(long)` sign-extends to 64 bits
 - function pointers: `int (*fp)(int, int)` declarations, assignment from function names (`fp = add`), indirect calls (`fp(a, b)`), and function pointer parameters (`int apply(int (*fn)(int), int x)`); function names used as values decay to their address via `leaq`; indirect calls emit `call *%rax`
+- variadic functions: `int sum(int n, ...)` definitions and prototypes, with `va_list`, `va_start(ap, last)`, `va_arg(ap, type)` and `va_end(ap)`; the prologue of a variadic function spills the six integer argument registers to a save area and `va_arg` walks that area first before falling through to the arguments the caller left on the stack, matching the System V AMD64 layout, so a `va_list` can be handed straight to a libc function like `vsnprintf` or `vprintf`; call sites zero `al` before calling anything variadic; floating point arguments are not supported since redix has no floating point types
 - `//` line comments and `/* */` block comments
 
 ## Building

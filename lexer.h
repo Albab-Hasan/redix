@@ -64,6 +64,11 @@ enum token_type {
 	TOKEN_ENUM,
 	TOKEN_UNSIGNED,
 	TOKEN_LONG,
+	TOKEN_ELLIPSIS,
+	TOKEN_VA_LIST,
+	TOKEN_VA_START,
+	TOKEN_VA_ARG,
+	TOKEN_VA_END,
 };
 
 struct token {
