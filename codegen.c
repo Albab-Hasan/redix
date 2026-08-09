@@ -971,7 +971,12 @@ static int expr_ptr_scale(struct ast_node *node)
 		return stride;
 
 	switch (node->type) {
+	/* inc and dec keep the name in value like a plain var so the same lookup works */
 	case NODE_VAR:
+	case NODE_PREFIX_INC:
+	case NODE_PREFIX_DEC:
+	case NODE_POSTFIX_INC:
+	case NODE_POSTFIX_DEC:
 		g = lookup_global(node->value);
 		if (g)
 			return g->is_ptr ? g->elem_size : 0;
