@@ -136,6 +136,14 @@ static struct ast_node *parse_primary(void)
 			sprintf(buf, "%d", ent->value);
 			return make_node(NODE_NUMBER, buf);
 		}
+		if (current()->type == TOKEN_INC) {
+			position++;
+			return make_node(NODE_POSTFIX_INC, tok->value);
+		}
+		if (current()->type == TOKEN_DEC) {
+			position++;
+			return make_node(NODE_POSTFIX_DEC, tok->value);
+		}
 		if (current()->type == TOKEN_LPAREN) {
 			position++;
 			node = make_node(NODE_CALL, tok->value);
@@ -145,18 +153,10 @@ static struct ast_node *parse_primary(void)
 					position++;
 			}
 			expect(TOKEN_RPAREN);
-			return node;
+		} else {
+			node = make_node(NODE_VAR, tok->value);
 		}
-		if (current()->type == TOKEN_INC) {
-			position++;
-			return make_node(NODE_POSTFIX_INC, tok->value);
-		}
-		if (current()->type == TOKEN_DEC) {
-			position++;
-			return make_node(NODE_POSTFIX_DEC, tok->value);
-		}
-		/* a postfix chain so p->next->val and a[i].x keep building on the last result */
-		node = make_node(NODE_VAR, tok->value);
+		/* a postfix chain so mk()->v and p->next->val and a[i].x keep building on the last result */
 		while (current()->type == TOKEN_LBRACKET
 				|| current()->type == TOKEN_DOT
 				|| current()->type == TOKEN_ARROW) {
@@ -1062,33 +1062,78 @@ static struct ast_node *parse_statement(void)
 	}
 }
 
+/* the type can run any number of tokens so a fixed peek cannot find the name */
+static int is_function_decl(void)
+{
+	int i;
+
+	i = position;
+	if (tokens[i].type == TOKEN_STRUCT)
+		i += 2;
+	else
+		while (tokens[i].type == TOKEN_UNSIGNED || tokens[i].type == TOKEN_LONG
+				|| tokens[i].type == TOKEN_INT || tokens[i].type == TOKEN_CHAR
+				|| tokens[i].type == TOKEN_VOID)
+			i++;
+	while (i < token_count && tokens[i].type == TOKEN_STAR)
+		i++;
+	if (i + 1 >= token_count || tokens[i].type != TOKEN_IDENTIFIER)
+		return 0;
+	return tokens[i + 1].type == TOKEN_LPAREN;
+}
+
 static struct ast_node *parse_function(void)
 {
 	struct token *name;
 	struct token *pname;
 	struct ast_node *node;
 	struct token *sret_type;
+	const char *ret_base;
+	const char *ret_pointee;
 	int is_ptr_param;
 	int is_char_param;
 
 	sret_type = NULL;
+	ret_pointee = NULL;
 	if (current()->type == TOKEN_STRUCT) {
 		position++;
 		sret_type = expect(TOKEN_IDENTIFIER);
+		if (current()->type == TOKEN_STAR) {
+			position++;
+			ret_pointee = sret_type->value;
+			sret_type = NULL;
+		}
 	} else {
-		/* return type gets consumed and ignored since every value is int sized anyway */
+		/* a non pointer return type gets ignored since every value is int sized anyway */
 		if (current()->type == TOKEN_UNSIGNED)
 			position++;
+		ret_base = "int";
 		if (current()->type == TOKEN_INT || current()->type == TOKEN_VOID
-				|| current()->type == TOKEN_CHAR || current()->type == TOKEN_LONG)
+				|| current()->type == TOKEN_CHAR || current()->type == TOKEN_LONG) {
+			if (current()->type == TOKEN_CHAR)
+				ret_base = "char";
+			else if (current()->type == TOKEN_LONG)
+				ret_base = "long";
+			else if (current()->type == TOKEN_VOID)
+				ret_base = "void";
 			position++;
-		else
+			if (strcmp(ret_base, "long") == 0 && current()->type == TOKEN_INT)
+				position++;
+		} else {
 			expect(TOKEN_INT);
+		}
+		if (current()->type == TOKEN_STAR) {
+			position++;
+			ret_pointee = ret_base;
+		}
 	}
 	name = expect(TOKEN_IDENTIFIER);
 	node = make_node(NODE_FUNCTION, name->value);
 	if (sret_type)
 		add_child(node, make_node(NODE_STRUCT_RET, sret_type->value));
+	else if (ret_pointee)
+		/* the pointee decides how call sites scale arithmetic so codegen needs it recorded */
+		add_child(node, make_node(NODE_PTR_RET, (char *)ret_pointee));
 	expect(TOKEN_LPAREN);
 	while (current()->type != TOKEN_RPAREN) {
 		if (current()->type == TOKEN_ELLIPSIS) {
@@ -1276,18 +1321,13 @@ struct ast_node *parse(struct token *toks, int count)
 			if (position + 2 < token_count
 					&& tokens[position + 2].type == TOKEN_LBRACE)
 				add_child(program, parse_struct_def());
-			/* struct T name(...) is a struct-returning function */
-			else if (position + 3 < token_count
-					&& tokens[position + 2].type == TOKEN_IDENTIFIER
-					&& tokens[position + 3].type == TOKEN_LPAREN)
+			else if (is_function_decl())
 				add_child(program, parse_function());
 			else
 				add_child(program, parse_global_struct());
 		} else if (current()->type == TOKEN_ENUM) {
 			parse_enum_def();
-		/* peek ahead -- int/void/char NAME ( means function otherwise global */
-		} else if (position + 2 < token_count
-				&& tokens[position + 2].type == TOKEN_LPAREN) {
+		} else if (is_function_decl()) {
 			add_child(program, parse_function());
 		} else {
 			add_child(program, parse_global());

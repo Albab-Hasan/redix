@@ -78,6 +78,15 @@ static struct {
 static int sret_count;
 static char current_func_sret_type[64];
 
+/* a pointer returning function tells call sites nothing by itself so the pointee is kept here */
+#define MAX_RETPTR 32
+static struct {
+	char name[64];
+	int  scale;
+	char struct_type[64];
+} retptr_tab[MAX_RETPTR];
+static int retptr_count;
+
 /* call sites must zero al before a variadic callee so the registry has to reach them */
 #define MAX_VARARG 32
 static char *vararg_names[MAX_VARARG];
@@ -112,6 +121,42 @@ static struct field_entry *lookup_field(int idx, const char *name)
 			struct_types[idx].name, name);
 	exit(1);
 	return NULL;
+}
+
+static int lookup_retptr(const char *name)
+{
+	int i;
+
+	for (i = 0; i < retptr_count; i++)
+		if (strcmp(retptr_tab[i].name, name) == 0)
+			return i;
+	return -1;
+}
+
+static void declare_retptr(const char *name, const char *pointee)
+{
+	int idx;
+
+	strncpy(retptr_tab[retptr_count].name, name, 63);
+	retptr_tab[retptr_count].name[63] = '\0';
+	retptr_tab[retptr_count].struct_type[0] = '\0';
+	if (strcmp(pointee, "char") == 0)
+		retptr_tab[retptr_count].scale = 1;
+	else if (strcmp(pointee, "int") == 0)
+		retptr_tab[retptr_count].scale = 4;
+	else if (strcmp(pointee, "long") == 0)
+		retptr_tab[retptr_count].scale = 8;
+	/* void has no size so it steps a byte at a time the way gcc treats void* arithmetic */
+	else if (strcmp(pointee, "void") == 0)
+		retptr_tab[retptr_count].scale = 1;
+	/* anything left is a struct tag since a base type name would be a keyword */
+	else {
+		idx = lookup_struct(pointee);
+		retptr_tab[retptr_count].scale = struct_types[idx].total_size;
+		strncpy(retptr_tab[retptr_count].struct_type, pointee, 63);
+		retptr_tab[retptr_count].struct_type[63] = '\0';
+	}
+	retptr_count++;
 }
 
 /* like lookup_var but returns NULL instead of dying since most names are locals */
@@ -547,6 +592,7 @@ static const char *expr_struct_type(struct ast_node *node)
 	struct glob_entry *g;
 	struct field_entry *f;
 	const char *t;
+	int idx;
 
 	switch (node->type) {
 	case NODE_VAR:
@@ -557,6 +603,11 @@ static const char *expr_struct_type(struct ast_node *node)
 		if (v && v->struct_type[0])
 			return v->struct_type;
 		return NULL;
+	case NODE_CALL:
+		idx = lookup_retptr(node->value);
+		if (idx < 0 || !retptr_tab[idx].struct_type[0])
+			return NULL;
+		return retptr_tab[idx].struct_type;
 	case NODE_MEMBER:
 	case NODE_MEMBER_ASSIGN:
 	case NODE_PTR_MEMBER:
@@ -963,6 +1014,7 @@ static int expr_ptr_scale(struct ast_node *node)
 	const char *t;
 	int l;
 	int r;
+	int idx;
 	int stride;
 
 	/* a multi dim array steps a whole row so its stride beats the plain element size */
@@ -1011,6 +1063,9 @@ static int expr_ptr_scale(struct ast_node *node)
 	case NODE_DEREF:
 		/* indexing a pointer array yields a pointer so its pointee sets the next scale */
 		return expr_elem_ptr(node->children[0]);
+	case NODE_CALL:
+		idx = lookup_retptr(node->value);
+		return idx < 0 ? 0 : retptr_tab[idx].scale;
 	case NODE_CAST:
 	case NODE_VA_ARG:
 		if (strcmp(node->value, "int*") == 0)  return 4;
@@ -2011,9 +2066,11 @@ static void gen_function(struct ast_node *node)
 	current_va_save = 0;
 	current_va_gp_start = 0;
 
-	has_sret = node->child_count > 0
-			&& node->children[0]->type == NODE_STRUCT_RET;
-	param_start = has_sret ? 1 : 0;
+	/* both return markers sit ahead of the params so either one shifts where they start */
+	param_start = node->child_count > 0
+			&& (node->children[0]->type == NODE_STRUCT_RET
+			|| node->children[0]->type == NODE_PTR_RET);
+	has_sret = param_start && node->children[0]->type == NODE_STRUCT_RET;
 	if (has_sret) {
 		strncpy(current_func_sret_type, node->children[0]->value, 63);
 		current_func_sret_type[63] = '\0';
@@ -2300,6 +2357,7 @@ static void gen_program(struct ast_node *node)
 	sret_count = 0;
 	func_count = 0;
 	vararg_count = 0;
+	retptr_count = 0;
 	for (i = 0; i < node->child_count; i++)
 		if (node->children[i]->type == NODE_STRUCT_DEF)
 			gen_struct_def(node->children[i]);
@@ -2336,6 +2394,17 @@ static void gen_program(struct ast_node *node)
 			sret_tab[sret_count].total_size = struct_types[sidx].total_size;
 			sret_count++;
 		}
+	}
+
+	/* register pointer returning functions so call sites can scale and find fields */
+	for (i = 0; i < node->child_count; i++) {
+		struct ast_node *fn = node->children[i];
+		if ((fn->type == NODE_FUNCTION || fn->type == NODE_PROTO)
+				&& fn->child_count > 0
+				&& fn->children[0]->type == NODE_PTR_RET
+				&& lookup_retptr(fn->value) < 0
+				&& retptr_count < MAX_RETPTR)
+			declare_retptr(fn->value, fn->children[0]->value);
 	}
 
 	for (i = 0; i < node->child_count; i++) {

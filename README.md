@@ -22,6 +22,7 @@ code generation. Currently it supports:
 - multiple functions with up to 6 named parameters; a call site can pass more than 6 arguments, with the extras going on the stack and `rsp` kept 16-byte aligned
 - function prototypes: `int foo(int a);` forward-declares a function, enabling calls before the definition and mutual recursion
 - `void` return type and bare `return;`
+- pointer return types: `int *f()`, `char *f()`, `long *f()`, `void *f()` and `struct T *f()`, in definitions and in prototypes; each function records what its returned pointer points at, so a call result can be dereferenced (`*f(x)`), indexed (`f(x)[i]`), used in pointer arithmetic (`f(x) + 1`) and chained through a struct (`f(x)->field`) with the right element size; `void *` steps one byte at a time the way GCC treats `void *` arithmetic. This is what makes the libc allocation and string functions declarable: `void *malloc(long n);`, `char *strcpy(char *d, char *s);`. Double pointer returns like `char **f()` are not supported
 - pointers: `int *p`, address-of `&x`, dereference `*p`, pointer parameters
 - pointer arithmetic: `p + n`, `p - n`, `p++`, `p--`, pointer difference, and `p[i]` indexing
 - arrays: `int a[N]`, element access `a[i]`, brace initializers `int a[3] = {1, 2, 3}` and size-inferred `int a[] = {1, 2, 3}`, decay to pointer when passed to functions

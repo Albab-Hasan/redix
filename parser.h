@@ -72,6 +72,7 @@ enum node_type {
 	NODE_VA_START,
 	NODE_VA_ARG,
 	NODE_VA_END,
+	NODE_PTR_RET,
 };
 
 struct ast_node {
