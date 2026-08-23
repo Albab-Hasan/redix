@@ -69,6 +69,8 @@ enum token_type {
 	TOKEN_VA_START,
 	TOKEN_VA_ARG,
 	TOKEN_VA_END,
+	TOKEN_STATIC,
+	TOKEN_CONST,
 };
 
 struct token {

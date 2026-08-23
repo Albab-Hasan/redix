@@ -82,6 +82,8 @@ const char *token_type_name(enum token_type type)
 	case TOKEN_VA_START:		return "TOKEN_VA_START";
 	case TOKEN_VA_ARG:		return "TOKEN_VA_ARG";
 	case TOKEN_VA_END:		return "TOKEN_VA_END";
+	case TOKEN_STATIC:		return "TOKEN_STATIC";
+	case TOKEN_CONST:		return "TOKEN_CONST";
 	}
 	return "UNKNOWN";
 }
@@ -114,6 +116,8 @@ static const struct {
 	{ "va_start", TOKEN_VA_START },
 	{ "va_arg",   TOKEN_VA_ARG },
 	{ "va_end",   TOKEN_VA_END },
+	{ "static",   TOKEN_STATIC },
+	{ "const",    TOKEN_CONST },
 };
 
 #define NKEYWORDS (sizeof(keywords) / sizeof(keywords[0]))

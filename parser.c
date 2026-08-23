@@ -68,6 +68,14 @@ static struct enum_entry *lookup_enum(const char *name)
 static struct ast_node *parse_statement(void);
 static struct ast_node *parse_expression(void);
 
+/* one translation unit means static linkage and const writes change no codegen
+ * so the qualifiers get dropped wherever a type can start */
+static void skip_qualifiers(void)
+{
+	while (current()->type == TOKEN_STATIC || current()->type == TOKEN_CONST)
+		position++;
+}
+
 /* the returned string is the same spelling codegen matches on for casts */
 static const char *parse_type_name(void)
 {
@@ -80,6 +88,7 @@ static const char *parse_type_name(void)
 	is_long = 0;
 	is_unsigned = 0;
 	is_ptr = 0;
+	skip_qualifiers();
 	if (current()->type == TOKEN_UNSIGNED) {
 		is_unsigned = 1;
 		position++;
@@ -289,7 +298,8 @@ static struct ast_node *parse_unary(void)
 			&& (tokens[position + 1].type == TOKEN_INT
 				|| tokens[position + 1].type == TOKEN_CHAR
 				|| tokens[position + 1].type == TOKEN_LONG
-				|| tokens[position + 1].type == TOKEN_UNSIGNED)) {
+				|| tokens[position + 1].type == TOKEN_UNSIGNED
+				|| tokens[position + 1].type == TOKEN_CONST)) {
 		struct ast_node *node;
 		const char *cast_type;
 
@@ -606,6 +616,7 @@ static struct ast_node *parse_declaration_inner(void)
 	is_unsigned = 0;
 	is_long = 0;
 
+	skip_qualifiers();
 	if (current()->type == TOKEN_UNSIGNED) {
 		is_unsigned = 1;
 		position++;
@@ -645,9 +656,11 @@ static struct ast_node *parse_declaration_inner(void)
 		return node;
 	}
 	is_ptr = 0;
+	skip_qualifiers();
 	if (current()->type == TOKEN_STAR) {
 		is_ptr = 1;
 		position++;
+		skip_qualifiers();
 	}
 	name = expect(TOKEN_IDENTIFIER);
 	if (current()->type == TOKEN_LBRACKET) {
@@ -887,6 +900,7 @@ static struct ast_node *parse_struct_def(void)
 		is_char = 0;
 		is_long = 0;
 		ftype = NULL;
+		skip_qualifiers();
 		if (current()->type == TOKEN_STRUCT) {
 			position++;
 			ftype = expect(TOKEN_IDENTIFIER);
@@ -1045,6 +1059,11 @@ static struct ast_node *parse_statement(void)
 	case TOKEN_UNSIGNED:
 	case TOKEN_LONG:	return parse_declaration();
 	case TOKEN_STRUCT:	return parse_local_struct_decl();
+	/* a local static loses its storage duration here which only shows up
+	 * if the local is written and expected to survive the call */
+	case TOKEN_STATIC:
+	case TOKEN_CONST:	skip_qualifiers();
+				return parse_statement();
 	case TOKEN_IF:		return parse_if();
 	case TOKEN_WHILE:	return parse_while();
 	case TOKEN_FOR:		return parse_for();
@@ -1068,6 +1087,8 @@ static int is_function_decl(void)
 	int i;
 
 	i = position;
+	while (tokens[i].type == TOKEN_STATIC || tokens[i].type == TOKEN_CONST)
+		i++;
 	if (tokens[i].type == TOKEN_STRUCT)
 		i += 2;
 	else
@@ -1095,6 +1116,7 @@ static struct ast_node *parse_function(void)
 
 	sret_type = NULL;
 	ret_pointee = NULL;
+	skip_qualifiers();
 	if (current()->type == TOKEN_STRUCT) {
 		position++;
 		sret_type = expect(TOKEN_IDENTIFIER);
@@ -1136,6 +1158,14 @@ static struct ast_node *parse_function(void)
 		add_child(node, make_node(NODE_PTR_RET, (char *)ret_pointee));
 	expect(TOKEN_LPAREN);
 	while (current()->type != TOKEN_RPAREN) {
+		skip_qualifiers();
+		/* void alone in the list means no params so there is nothing to declare */
+		if (current()->type == TOKEN_VOID
+				&& position + 1 < token_count
+				&& tokens[position + 1].type == TOKEN_RPAREN) {
+			position++;
+			continue;
+		}
 		if (current()->type == TOKEN_ELLIPSIS) {
 			position++;
 			add_child(node, make_node(NODE_VARARG, NULL));
@@ -1210,6 +1240,7 @@ static struct ast_node *parse_function(void)
 			if (current()->type == TOKEN_STAR) {
 				is_ptr_param = 1;
 				position++;
+				skip_qualifiers();
 			}
 			pname = expect(TOKEN_IDENTIFIER);
 			if (is_ptr_param)
@@ -1251,12 +1282,15 @@ static struct ast_node *parse_global(void)
 	int infer_size;
 	int init_count;
 
+	skip_qualifiers();
 	is_char = (current()->type == TOKEN_CHAR);
 	position++;
 	is_ptr = 0;
+	skip_qualifiers();
 	if (current()->type == TOKEN_STAR) {
 		is_ptr = 1;
 		position++;
+		skip_qualifiers();
 	}
 	name = expect(TOKEN_IDENTIFIER);
 	if (current()->type == TOKEN_LBRACKET) {
@@ -1317,6 +1351,7 @@ struct ast_node *parse(struct token *toks, int count)
 
 	program = make_node(NODE_PROGRAM, NULL);
 	while (current()->type != TOKEN_EOF) {
+		skip_qualifiers();
 		if (current()->type == TOKEN_STRUCT) {
 			if (position + 2 < token_count
 					&& tokens[position + 2].type == TOKEN_LBRACE)
