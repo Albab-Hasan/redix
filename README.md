@@ -42,7 +42,7 @@ code generation. Currently it supports:
 - address of an element or member: `&a[i]`, `&s.field`, `&p->field`
 - `switch`/`case`/`default`: integer switch with fallthrough, `break` exits the switch
 - `do`/`while` loops: body runs at least once, `break` and `continue` work as expected
-- enums: `enum name { A, B = 5, C };` at file scope, constants fold to numbers at parse time, usable in expressions and as `case` labels
+- enums: `enum name { A, B = 5, C };` at file scope, constants fold to numbers at parse time, usable in expressions and as `case` labels; the tag also works as a type — `enum name x;` as a local, global, parameter, return type, struct field or `for` init, plus `sizeof(enum name)` → 4 and the cast `(enum name)x`. An enum variable is an `int` in every respect, so the parser consumes the type and forgets it and no range or assignment checking happens. Enums must still be defined at file scope
 - `#define NAME value`: object-like macros, expanded in the lexer, value can be any token sequence, macros can reference other macros, works as array sizes
 - nested block scoping: `{ int x = 5; }` declares `x` only for the duration of the block; inner variables shadow outer ones with the same name and the outer name comes back when the block exits
 - `unsigned int` and `unsigned char`: zero-extension on char load (`movzbl`), unsigned division (`divl`/`divq` with `xor edx`), unsigned right shift (`shrl`/`shrq`), unsigned comparison flags (`setb`/`seta`/`setbe`/`setae`)

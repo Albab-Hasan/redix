@@ -76,6 +76,29 @@ static void skip_qualifiers(void)
 		position++;
 }
 
+/* a brace after the enum keyword or its tag means a definition
+ * anything else naming a tag is a type reference */
+static int is_enum_type(void)
+{
+	if (current()->type != TOKEN_ENUM)
+		return 0;
+	if (position + 1 < token_count && tokens[position + 1].type == TOKEN_LBRACE)
+		return 0;
+	if (position + 2 < token_count && tokens[position + 2].type == TOKEN_LBRACE)
+		return 0;
+	return 1;
+}
+
+/* an enum variable is an int so the type gets consumed and forgotten */
+static int skip_enum_type(void)
+{
+	if (!is_enum_type())
+		return 0;
+	position++;
+	expect(TOKEN_IDENTIFIER);
+	return 1;
+}
+
 /* the returned string is the same spelling codegen matches on for casts */
 static const char *parse_type_name(void)
 {
@@ -89,20 +112,22 @@ static const char *parse_type_name(void)
 	is_unsigned = 0;
 	is_ptr = 0;
 	skip_qualifiers();
-	if (current()->type == TOKEN_UNSIGNED) {
-		is_unsigned = 1;
-		position++;
-	}
-	if (current()->type == TOKEN_LONG) {
-		is_long = 1;
-		position++;
-		if (current()->type == TOKEN_INT)
+	if (!skip_enum_type()) {
+		if (current()->type == TOKEN_UNSIGNED) {
+			is_unsigned = 1;
 			position++;
-	} else if (current()->type == TOKEN_INT) {
-		position++;
-	} else if (current()->type == TOKEN_CHAR) {
-		is_char = 1;
-		position++;
+		}
+		if (current()->type == TOKEN_LONG) {
+			is_long = 1;
+			position++;
+			if (current()->type == TOKEN_INT)
+				position++;
+		} else if (current()->type == TOKEN_INT) {
+			position++;
+		} else if (current()->type == TOKEN_CHAR) {
+			is_char = 1;
+			position++;
+		}
 	}
 	if (current()->type == TOKEN_STAR) {
 		is_ptr = 1;
@@ -276,7 +301,13 @@ static struct ast_node *parse_unary(void)
 			/* the layout only exists in codegen so the size resolves there */
 			return make_node(NODE_SIZEOF_STRUCT, tok->value);
 		}
-		if (current()->type == TOKEN_INT || current()->type == TOKEN_CHAR) {
+		if (skip_enum_type()) {
+			sz = 4;
+			if (current()->type == TOKEN_STAR) {
+				position++;
+				sz = 8;
+			}
+		} else if (current()->type == TOKEN_INT || current()->type == TOKEN_CHAR) {
 			sz = (current()->type == TOKEN_CHAR) ? 1 : 4;
 			position++;
 			if (current()->type == TOKEN_STAR) {
@@ -299,6 +330,7 @@ static struct ast_node *parse_unary(void)
 				|| tokens[position + 1].type == TOKEN_CHAR
 				|| tokens[position + 1].type == TOKEN_LONG
 				|| tokens[position + 1].type == TOKEN_UNSIGNED
+				|| tokens[position + 1].type == TOKEN_ENUM
 				|| tokens[position + 1].type == TOKEN_CONST)) {
 		struct ast_node *node;
 		const char *cast_type;
@@ -609,6 +641,7 @@ static struct ast_node *parse_declaration_inner(void)
 	int is_char;
 	int is_unsigned;
 	int is_long;
+	int is_enum;
 	int infer_size;
 	int init_count;
 
@@ -617,6 +650,7 @@ static struct ast_node *parse_declaration_inner(void)
 	is_long = 0;
 
 	skip_qualifiers();
+	is_enum = skip_enum_type();
 	if (current()->type == TOKEN_UNSIGNED) {
 		is_unsigned = 1;
 		position++;
@@ -631,7 +665,7 @@ static struct ast_node *parse_declaration_inner(void)
 	} else if (current()->type == TOKEN_CHAR) {
 		is_char = 1;
 		position++;
-	} else if (!is_unsigned) {
+	} else if (!is_unsigned && !is_enum) {
 		fprintf(stderr, "parser: expected type specifier\n");
 		exit(1);
 	}
@@ -755,7 +789,8 @@ static struct ast_node *parse_for(void)
 	position++;
 	node = make_node(NODE_FOR, NULL);
 	expect(TOKEN_LPAREN);
-	if (current()->type == TOKEN_INT || current()->type == TOKEN_CHAR)
+	if (current()->type == TOKEN_INT || current()->type == TOKEN_CHAR
+			|| current()->type == TOKEN_ENUM)
 		add_child(node, parse_declaration_inner());
 	else
 		add_child(node, parse_expression());
@@ -904,7 +939,7 @@ static struct ast_node *parse_struct_def(void)
 		if (current()->type == TOKEN_STRUCT) {
 			position++;
 			ftype = expect(TOKEN_IDENTIFIER);
-		} else {
+		} else if (!skip_enum_type()) {
 			is_char = current()->type == TOKEN_CHAR;
 			is_long = current()->type == TOKEN_LONG;
 			position++;
@@ -1057,7 +1092,8 @@ static struct ast_node *parse_statement(void)
 	case TOKEN_INT:
 	case TOKEN_CHAR:
 	case TOKEN_UNSIGNED:
-	case TOKEN_LONG:	return parse_declaration();
+	case TOKEN_LONG:
+	case TOKEN_ENUM:	return parse_declaration();
 	case TOKEN_STRUCT:	return parse_local_struct_decl();
 	/* a local static loses its storage duration here which only shows up
 	 * if the local is written and expected to survive the call */
@@ -1089,7 +1125,7 @@ static int is_function_decl(void)
 	i = position;
 	while (tokens[i].type == TOKEN_STATIC || tokens[i].type == TOKEN_CONST)
 		i++;
-	if (tokens[i].type == TOKEN_STRUCT)
+	if (tokens[i].type == TOKEN_STRUCT || tokens[i].type == TOKEN_ENUM)
 		i += 2;
 	else
 		while (tokens[i].type == TOKEN_UNSIGNED || tokens[i].type == TOKEN_LONG
@@ -1127,22 +1163,24 @@ static struct ast_node *parse_function(void)
 		}
 	} else {
 		/* a non pointer return type gets ignored since every value is int sized anyway */
-		if (current()->type == TOKEN_UNSIGNED)
-			position++;
 		ret_base = "int";
-		if (current()->type == TOKEN_INT || current()->type == TOKEN_VOID
-				|| current()->type == TOKEN_CHAR || current()->type == TOKEN_LONG) {
-			if (current()->type == TOKEN_CHAR)
-				ret_base = "char";
-			else if (current()->type == TOKEN_LONG)
-				ret_base = "long";
-			else if (current()->type == TOKEN_VOID)
-				ret_base = "void";
-			position++;
-			if (strcmp(ret_base, "long") == 0 && current()->type == TOKEN_INT)
+		if (!skip_enum_type()) {
+			if (current()->type == TOKEN_UNSIGNED)
 				position++;
-		} else {
-			expect(TOKEN_INT);
+			if (current()->type == TOKEN_INT || current()->type == TOKEN_VOID
+					|| current()->type == TOKEN_CHAR || current()->type == TOKEN_LONG) {
+				if (current()->type == TOKEN_CHAR)
+					ret_base = "char";
+				else if (current()->type == TOKEN_LONG)
+					ret_base = "long";
+				else if (current()->type == TOKEN_VOID)
+					ret_base = "void";
+				position++;
+				if (strcmp(ret_base, "long") == 0 && current()->type == TOKEN_INT)
+					position++;
+			} else {
+				expect(TOKEN_INT);
+			}
 		}
 		if (current()->type == TOKEN_STAR) {
 			position++;
@@ -1221,6 +1259,7 @@ static struct ast_node *parse_function(void)
 			int is_unsigned_param = 0;
 			int is_long_param = 0;
 			is_char_param = 0;
+			skip_enum_type();
 			if (current()->type == TOKEN_UNSIGNED) {
 				is_unsigned_param = 1;
 				position++;
@@ -1282,9 +1321,12 @@ static struct ast_node *parse_global(void)
 	int infer_size;
 	int init_count;
 
+	is_char = 0;
 	skip_qualifiers();
-	is_char = (current()->type == TOKEN_CHAR);
-	position++;
+	if (!skip_enum_type()) {
+		is_char = (current()->type == TOKEN_CHAR);
+		position++;
+	}
 	is_ptr = 0;
 	skip_qualifiers();
 	if (current()->type == TOKEN_STAR) {
@@ -1360,7 +1402,7 @@ struct ast_node *parse(struct token *toks, int count)
 				add_child(program, parse_function());
 			else
 				add_child(program, parse_global_struct());
-		} else if (current()->type == TOKEN_ENUM) {
+		} else if (current()->type == TOKEN_ENUM && !is_enum_type()) {
 			parse_enum_def();
 		} else if (is_function_decl()) {
 			add_child(program, parse_function());
