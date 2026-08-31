@@ -10,21 +10,32 @@ static int label_count;
 static char loop_break_label[64];
 static char loop_cont_label[64];
 
+enum type_kind {
+	TY_INT,
+	TY_CHAR,
+	TY_LONG,
+	TY_VOID,
+	TY_PTR,
+	TY_ARRAY,
+	TY_STRUCT,
+	TY_FUNC
+};
+
+/* size stays 0 for structs and arrays since those resolve from the tag or the length */
+struct type {
+	enum type_kind kind;
+	int size;
+	int is_unsigned;
+	struct type *base;   /* pointee of a pointer or element of an array */
+	int len;
+	char tag[64];
+};
+
 #define MAX_VARS 128
-#define MAX_DIMS 4
 static struct var_entry {
 	char *name;
 	int offset;      /* negative offset from rbp */
-	int is_ptr;
-	int is_array;
-	int is_struct;
-	int is_unsigned;
-	int is_fptr;     /* 8 byte slot holding a function address not a data pointer not a long */
-	int elem_size;   /* 1 for char 4 for int 8 for long */
-	int elem_ptr;    /* what an element points at when the elements are themselves pointers */
-	int dims[MAX_DIMS];
-	int ndims;       /* 0 when the name is not an array */
-	char struct_type[64];
+	struct type *ty;
 } var_map[MAX_VARS];
 static int var_count;
 static int stack_offset;
@@ -38,13 +49,7 @@ static int func_count;
 #define MAX_GLOBALS 64
 static struct glob_entry {
 	char *name;
-	int is_ptr;
-	int is_array;
-	int elem_size;
-	int elem_ptr;
-	int dims[MAX_DIMS];
-	int ndims;
-	char struct_type[64];
+	struct type *ty;
 } global_map[MAX_GLOBALS];
 static int global_count;
 
@@ -57,10 +62,7 @@ static int string_count;
 static struct field_entry {
 	char name[64];
 	int offset;
-	int size;        /* 1 for char 4 for int 8 for long or any pointer */
-	int is_ptr;
-	int elem_size;   /* what a pointer field points at 0 when the field is not a pointer */
-	char struct_type[64];
+	struct type *ty;
 } struct_flds[MAX_STRUCTS][MAX_FIELDS];
 static struct {
 	char name[64];
@@ -78,12 +80,11 @@ static struct {
 static int sret_count;
 static char current_func_sret_type[64];
 
-/* a pointer returning function tells call sites nothing by itself so the pointee is kept here */
+/* a pointer returning function tells call sites nothing by itself so the type is kept here */
 #define MAX_RETPTR 32
 static struct {
 	char name[64];
-	int  scale;
-	char struct_type[64];
+	struct type *ty;
 } retptr_tab[MAX_RETPTR];
 static int retptr_count;
 
@@ -110,6 +111,106 @@ static int lookup_struct(const char *name)
 	return -1;
 }
 
+/* the scalars are shared since nothing ever mutates a type once it is built */
+static struct type *ty_int;
+static struct type *ty_char;
+static struct type *ty_long;
+static struct type *ty_uint;
+static struct type *ty_uchar;
+static struct type *ty_ulong;
+static struct type *ty_void;
+static struct type *ty_func;
+
+static struct type *new_type(enum type_kind kind, int size)
+{
+	struct type *ty = malloc(sizeof(struct type));
+
+	ty->kind = kind;
+	ty->size = size;
+	ty->is_unsigned = 0;
+	ty->base = NULL;
+	ty->len = 0;
+	ty->tag[0] = '\0';
+	return ty;
+}
+
+static void init_types(void)
+{
+	ty_int = new_type(TY_INT, 4);
+	ty_char = new_type(TY_CHAR, 1);
+	ty_long = new_type(TY_LONG, 8);
+	ty_uint = new_type(TY_INT, 4);
+	ty_uint->is_unsigned = 1;
+	ty_uchar = new_type(TY_CHAR, 1);
+	ty_uchar->is_unsigned = 1;
+	ty_ulong = new_type(TY_LONG, 8);
+	ty_ulong->is_unsigned = 1;
+	/* void has no size so a void pointer steps a byte at a time like gcc does */
+	ty_void = new_type(TY_VOID, 1);
+	ty_func = new_type(TY_FUNC, 8);
+}
+
+static struct type *ptr_to(struct type *base)
+{
+	struct type *ty = new_type(TY_PTR, 8);
+
+	ty->base = base;
+	return ty;
+}
+
+static struct type *array_of(struct type *base, int len)
+{
+	struct type *ty = new_type(TY_ARRAY, 0);
+
+	ty->base = base;
+	ty->len = len;
+	return ty;
+}
+
+/* the tag is kept unresolved so a struct can hold a pointer to itself */
+static struct type *struct_of(const char *tag)
+{
+	struct type *ty = new_type(TY_STRUCT, 0);
+
+	strncpy(ty->tag, tag, 63);
+	ty->tag[63] = '\0';
+	return ty;
+}
+
+static int type_size(struct type *ty)
+{
+	if (ty->kind == TY_STRUCT)
+		return struct_types[lookup_struct(ty->tag)].total_size;
+	if (ty->kind == TY_ARRAY)
+		return ty->len * type_size(ty->base);
+	return ty->size;
+}
+
+/* an array decays to the address of its first element so both index the same way */
+static int is_ptr_like(struct type *ty)
+{
+	return ty && (ty->kind == TY_PTR || ty->kind == TY_ARRAY);
+}
+
+/* the byte step of one index 0 when the operand is not an address */
+static int ptr_scale(struct type *ty)
+{
+	if (!is_ptr_like(ty))
+		return 0;
+	/* a function pointer has no elements to walk through */
+	if (ty->base->kind == TY_FUNC)
+		return 0;
+	return type_size(ty->base);
+}
+
+/* a flat brace list fills an array at the innermost element size */
+static struct type *elem_scalar(struct type *ty)
+{
+	while (ty->kind == TY_ARRAY)
+		ty = ty->base;
+	return ty;
+}
+
 static struct field_entry *lookup_field(int idx, const char *name)
 {
 	int i;
@@ -133,29 +234,30 @@ static int lookup_retptr(const char *name)
 	return -1;
 }
 
-static void declare_retptr(const char *name, const char *pointee)
+/* the spelling names the base type and depth counts the stars the parser saw */
+static struct type *type_of_spelling(const char *spelling, int depth)
 {
-	int idx;
+	struct type *ty;
 
+	if (strcmp(spelling, "char") == 0)               ty = ty_char;
+	else if (strcmp(spelling, "int") == 0)           ty = ty_int;
+	else if (strcmp(spelling, "long") == 0)          ty = ty_long;
+	else if (strcmp(spelling, "unsigned") == 0)      ty = ty_uint;
+	else if (strcmp(spelling, "unsigned_char") == 0) ty = ty_uchar;
+	else if (strcmp(spelling, "void") == 0)          ty = ty_void;
+	/* anything left is a struct tag since every base type name is a keyword */
+	else                                             ty = struct_of(spelling);
+	while (depth-- > 0)
+		ty = ptr_to(ty);
+	return ty;
+}
+
+static void declare_retptr(const char *name, const char *pointee, int depth)
+{
 	strncpy(retptr_tab[retptr_count].name, name, 63);
 	retptr_tab[retptr_count].name[63] = '\0';
-	retptr_tab[retptr_count].struct_type[0] = '\0';
-	if (strcmp(pointee, "char") == 0)
-		retptr_tab[retptr_count].scale = 1;
-	else if (strcmp(pointee, "int") == 0)
-		retptr_tab[retptr_count].scale = 4;
-	else if (strcmp(pointee, "long") == 0)
-		retptr_tab[retptr_count].scale = 8;
-	/* void has no size so it steps a byte at a time the way gcc treats void* arithmetic */
-	else if (strcmp(pointee, "void") == 0)
-		retptr_tab[retptr_count].scale = 1;
-	/* anything left is a struct tag since a base type name would be a keyword */
-	else {
-		idx = lookup_struct(pointee);
-		retptr_tab[retptr_count].scale = struct_types[idx].total_size;
-		strncpy(retptr_tab[retptr_count].struct_type, pointee, 63);
-		retptr_tab[retptr_count].struct_type[63] = '\0';
-	}
+	retptr_tab[retptr_count].ty =
+			type_of_spelling(pointee, depth < 1 ? 1 : depth);
 	retptr_count++;
 }
 
@@ -176,61 +278,91 @@ static int is_global(const char *name)
 }
 
 /* the dims past the first hang off the size node so the shape reads left to right from there */
-static int dim_list(struct ast_node *size, int *dims)
+static struct type *array_type(struct ast_node *size, struct type *base)
 {
 	int i;
 
-	if (size->child_count + 1 > MAX_DIMS) {
-		fprintf(stderr, "codegen: too many array dimensions\n");
-		exit(1);
+	for (i = size->child_count - 1; i >= 0; i--)
+		base = array_of(base, atoi(size->children[i]->value));
+	return array_of(base, atoi(size->value));
+}
+
+/* a pointer node the parser never gave a depth to is a plain single star */
+static struct type *decl_ptr_type(struct ast_node *node, struct type *base)
+{
+	int depth = node->ptr_depth < 1 ? 1 : node->ptr_depth;
+
+	while (depth-- > 0)
+		base = ptr_to(base);
+	return base;
+}
+
+/* the frame counter and the code that stores into the slot both ask
+ * here so they cannot disagree about how wide a local is */
+static struct type *decl_type(struct ast_node *node)
+{
+	switch (node->type) {
+	case NODE_DECLARATION:
+	case NODE_GLOBAL:			return ty_int;
+	case NODE_CHAR_DECLARATION:		return ty_char;
+	case NODE_LONG_DECLARATION:		return ty_long;
+	case NODE_UNSIGNED_DECLARATION:		return ty_uint;
+	case NODE_UNSIGNED_CHAR_DECLARATION:	return ty_uchar;
+	case NODE_PTR_DECLARATION:
+	case NODE_GLOBAL_PTR:			return decl_ptr_type(node, ty_int);
+	case NODE_CHAR_PTR_DECLARATION:
+	case NODE_GLOBAL_CHAR_PTR:		return decl_ptr_type(node, ty_char);
+	case NODE_FPTR_DECLARATION:		return ptr_to(ty_func);
+	/* the four abi fields fit three quadwords and the array makes the name decay */
+	case NODE_VA_LIST_DECL:			return array_of(ty_long, 3);
+	case NODE_ARRAY_DECL:
+	case NODE_GLOBAL_ARRAY:
+		return array_type(node->children[0], ty_int);
+	case NODE_CHAR_ARRAY_DECL:
+	case NODE_GLOBAL_CHAR_ARRAY:
+		return array_type(node->children[0], ty_char);
+	case NODE_PTR_ARRAY_DECL:
+	case NODE_GLOBAL_PTR_ARRAY:
+		return array_type(node->children[0], decl_ptr_type(node, ty_int));
+	case NODE_CHAR_PTR_ARRAY_DECL:
+	case NODE_GLOBAL_CHAR_PTR_ARRAY:
+		return array_type(node->children[0], decl_ptr_type(node, ty_char));
+	case NODE_STRUCT_DECL:
+	case NODE_STRUCT_VAL_PARAM:
+	case NODE_GLOBAL_STRUCT:		return struct_of(node->value);
+	case NODE_STRUCT_PTR_DECL:
+	case NODE_GLOBAL_STRUCT_PTR:
+		return decl_ptr_type(node, struct_of(node->value));
+	case NODE_STRUCT_ARRAY_DECL:
+	case NODE_GLOBAL_STRUCT_ARRAY:
+		return array_of(struct_of(node->value),
+				atoi(node->children[1]->value));
+	default:				return NULL;
 	}
-	dims[0] = atoi(size->value);
-	for (i = 0; i < size->child_count; i++)
-		dims[i + 1] = atoi(size->children[i]->value);
-	return size->child_count + 1;
 }
 
-static int dim_total(struct ast_node *size)
+/* struct declarations keep the type in value so the name lives in the first child */
+static const char *decl_name(struct ast_node *node)
 {
-	int dims[MAX_DIMS];
-	int nd = dim_list(size, dims);
-	int total = 1;
-	int i;
-
-	for (i = 0; i < nd; i++)
-		total *= dims[i];
-	return total;
+	switch (node->type) {
+	case NODE_STRUCT_DECL:
+	case NODE_STRUCT_PTR_DECL:
+	case NODE_STRUCT_ARRAY_DECL:
+	case NODE_STRUCT_VAL_PARAM:
+	case NODE_GLOBAL_STRUCT:
+	case NODE_GLOBAL_STRUCT_PTR:
+	case NODE_GLOBAL_STRUCT_ARRAY:
+		return node->children[0]->value;
+	default:
+		return node->value;
+	}
 }
 
-static void declare_global(const char *name, int is_ptr, int is_array,
-		int elem_size)
+static void declare_global(const char *name, struct type *ty)
 {
 	global_map[global_count].name = strdup(name);
-	global_map[global_count].is_ptr = is_ptr;
-	global_map[global_count].is_array = is_array;
-	global_map[global_count].elem_size = elem_size;
-	global_map[global_count].elem_ptr = 0;
-	global_map[global_count].ndims = 0;
-	global_map[global_count].struct_type[0] = '\0';
+	global_map[global_count].ty = ty;
 	global_count++;
-}
-
-static void declare_global_array(const char *name, struct ast_node *size,
-		int elem_size, int elem_ptr)
-{
-	declare_global(name, 1, 1, elem_size);
-	global_map[global_count - 1].elem_ptr = elem_ptr;
-	global_map[global_count - 1].ndims =
-			dim_list(size, global_map[global_count - 1].dims);
-}
-
-static void declare_global_struct(const char *name, const char *type_name,
-		int is_ptr, int is_array)
-{
-	declare_global(name, is_ptr, is_array,
-			struct_types[lookup_struct(type_name)].total_size);
-	strncpy(global_map[global_count - 1].struct_type, type_name, 63);
-	global_map[global_count - 1].struct_type[63] = '\0';
 }
 
 static struct var_entry *lookup_var(const char *name)
@@ -256,158 +388,24 @@ static struct var_entry *try_lookup_var(const char *name)
 	return NULL;
 }
 
-/* every scalar and ptr gets a full 8 byte slot so offsets never need alignment math */
-static int declare_var(const char *name, int is_ptr, int is_unsigned, int elem_size)
+/* the smallest slot is 8 and wider ones round up so later offsets stay aligned */
+static int slot_bytes(struct type *ty)
 {
-	stack_offset -= 8;
-	var_map[var_count].name = strdup(name);
-	var_map[var_count].offset = stack_offset;
-	var_map[var_count].is_ptr = is_ptr;
-	var_map[var_count].is_array = 0;
-	var_map[var_count].is_struct = 0;
-	var_map[var_count].is_unsigned = is_unsigned;
-	var_map[var_count].is_fptr = 0;
-	var_map[var_count].elem_size = elem_size;
-	var_map[var_count].elem_ptr = 0;
-	var_map[var_count].ndims = 0;
-	var_map[var_count].struct_type[0] = '\0';
-	var_count++;
-	return stack_offset;
-}
+	int bytes = type_size(ty);
 
-/* is_array so the name leaqs to its own address which is exactly how va_list decays in c */
-static int declare_valist_var(const char *name)
-{
-	stack_offset -= VA_LIST_SIZE;
-	var_map[var_count].name = strdup(name);
-	var_map[var_count].offset = stack_offset;
-	var_map[var_count].is_ptr = 0;
-	var_map[var_count].is_array = 1;
-	var_map[var_count].is_struct = 0;
-	var_map[var_count].is_unsigned = 0;
-	var_map[var_count].is_fptr = 0;
-	var_map[var_count].elem_size = 8;
-	var_map[var_count].elem_ptr = 0;
-	var_map[var_count].ndims = 0;
-	var_map[var_count].struct_type[0] = '\0';
-	var_count++;
-	return stack_offset;
-}
-
-static int declare_fptr_var(const char *name)
-{
-	stack_offset -= 8;
-	var_map[var_count].name = strdup(name);
-	var_map[var_count].offset = stack_offset;
-	var_map[var_count].is_ptr = 0;
-	var_map[var_count].is_array = 0;
-	var_map[var_count].is_struct = 0;
-	var_map[var_count].is_unsigned = 0;
-	var_map[var_count].is_fptr = 1;
-	var_map[var_count].elem_size = 8;
-	var_map[var_count].elem_ptr = 0;
-	var_map[var_count].ndims = 0;
-	var_map[var_count].struct_type[0] = '\0';
-	var_count++;
-	return stack_offset;
-}
-
-static int declare_struct_var(const char *name, const char *type_name)
-{
-	int idx;
-	int bytes;
-
-	idx = lookup_struct(type_name);
-	bytes = struct_types[idx].total_size;
+	if (bytes < 8)
+		bytes = 8;
 	if (bytes % 8 != 0)
 		bytes += 8 - (bytes % 8);
-	stack_offset -= bytes;
-	var_map[var_count].name = strdup(name);
-	var_map[var_count].offset = stack_offset;
-	var_map[var_count].is_ptr = 0;
-	var_map[var_count].is_array = 0;
-	var_map[var_count].is_struct = 1;
-	var_map[var_count].is_fptr = 0;
-	var_map[var_count].elem_size = 4;
-	var_map[var_count].elem_ptr = 0;
-	var_map[var_count].ndims = 0;
-	strncpy(var_map[var_count].struct_type, type_name, 63);
-	var_map[var_count].struct_type[63] = '\0';
-	var_count++;
-	return stack_offset;
+	return bytes;
 }
 
-static int declare_struct_ptr_var(const char *name, const char *type_name)
+static int declare_var(const char *name, struct type *ty)
 {
-	stack_offset -= 8;
+	stack_offset -= slot_bytes(ty);
 	var_map[var_count].name = strdup(name);
 	var_map[var_count].offset = stack_offset;
-	var_map[var_count].is_ptr = 1;
-	var_map[var_count].is_array = 0;
-	var_map[var_count].is_struct = 0;
-	var_map[var_count].is_fptr = 0;
-	/* stepping a struct pointer moves a whole struct not 4 bytes */
-	var_map[var_count].elem_size =
-			struct_types[lookup_struct(type_name)].total_size;
-	var_map[var_count].elem_ptr = 0;
-	var_map[var_count].ndims = 0;
-	strncpy(var_map[var_count].struct_type, type_name, 63);
-	var_map[var_count].struct_type[63] = '\0';
-	var_count++;
-	return stack_offset;
-}
-
-static int declare_struct_array_var(const char *name, const char *type_name,
-		int count)
-{
-	int esz;
-	int bytes;
-
-	esz = struct_types[lookup_struct(type_name)].total_size;
-	bytes = esz * count;
-	if (bytes % 8 != 0)
-		bytes += 8 - (bytes % 8);
-	stack_offset -= bytes;
-	var_map[var_count].name = strdup(name);
-	var_map[var_count].offset = stack_offset;
-	var_map[var_count].is_ptr = 1;
-	var_map[var_count].is_array = 1;
-	var_map[var_count].is_struct = 1;
-	var_map[var_count].is_unsigned = 0;
-	var_map[var_count].is_fptr = 0;
-	var_map[var_count].elem_size = esz;
-	var_map[var_count].elem_ptr = 0;
-	var_map[var_count].ndims = 0;
-	strncpy(var_map[var_count].struct_type, type_name, 63);
-	var_map[var_count].struct_type[63] = '\0';
-	var_count++;
-	return stack_offset;
-}
-
-/* padded to 8 so the slots placed after the array stay aligned */
-static int declare_array(const char *name, int *dims, int ndims, int elem_size,
-		int elem_ptr)
-{
-	int bytes = elem_size;
-	int i;
-
-	for (i = 0; i < ndims; i++)
-		bytes *= dims[i];
-	if (bytes % 8 != 0)
-		bytes += 8 - (bytes % 8);
-	stack_offset -= bytes;
-	var_map[var_count].name = strdup(name);
-	var_map[var_count].offset = stack_offset;
-	var_map[var_count].is_ptr = 1;
-	var_map[var_count].is_array = 1;
-	var_map[var_count].is_struct = 0;
-	var_map[var_count].is_fptr = 0;
-	var_map[var_count].elem_size = elem_size;
-	var_map[var_count].elem_ptr = elem_ptr;
-	var_map[var_count].ndims = ndims;
-	for (i = 0; i < ndims; i++)
-		var_map[var_count].dims[i] = dims[i];
-	var_map[var_count].struct_type[0] = '\0';
+	var_map[var_count].ty = ty;
 	var_count++;
 	return stack_offset;
 }
@@ -493,13 +491,11 @@ static void gen_statement(struct ast_node *node);
 static void gen_struct_def(struct ast_node *node)
 {
 	struct ast_node *f;
-	const char *fname;
+	struct type *fty;
 	int i;
 	int idx;
 	int off;
 	int fsz;
-	int fis_ptr;
-	int felem;
 	int max_align;
 
 	idx = struct_type_count++;
@@ -510,44 +506,15 @@ static void gen_struct_def(struct ast_node *node)
 	max_align = 1;
 	for (i = 0; i < node->child_count; i++) {
 		f = node->children[i];
-		fname = f->value;
-		fis_ptr = 0;
-		felem = 0;
-		struct_flds[idx][i].struct_type[0] = '\0';
-		switch (f->type) {
-		case NODE_CHAR_DECLARATION:
-			fsz = 1;
-			break;
-		case NODE_LONG_DECLARATION:
-			fsz = 8;
-			break;
-		case NODE_PTR_DECLARATION:
-		case NODE_CHAR_PTR_DECLARATION:
-			fsz = 8;
-			fis_ptr = 1;
-			felem = f->type == NODE_CHAR_PTR_DECLARATION ? 1 : 4;
-			break;
-		case NODE_STRUCT_PTR_DECL:
-			fsz = 8;
-			fis_ptr = 1;
-			/* the pointee size stays unresolved here so a struct can point at itself */
-			fname = f->children[0]->value;
-			strncpy(struct_flds[idx][i].struct_type, f->value, 63);
-			struct_flds[idx][i].struct_type[63] = '\0';
-			break;
-		default:
-			fsz = 4;
-			break;
-		}
+		fty = decl_type(f);
+		fsz = type_size(fty);
 		/* char fields pack tight wider fields align to their size so loads never straddle */
 		if (off % fsz != 0)
 			off += fsz - (off % fsz);
-		strncpy(struct_flds[idx][i].name, fname, 63);
+		strncpy(struct_flds[idx][i].name, decl_name(f), 63);
 		struct_flds[idx][i].name[63] = '\0';
 		struct_flds[idx][i].offset = off;
-		struct_flds[idx][i].size = fsz;
-		struct_flds[idx][i].is_ptr = fis_ptr;
-		struct_flds[idx][i].elem_size = felem;
+		struct_flds[idx][i].ty = fty;
 		off += fsz;
 		if (fsz > max_align)
 			max_align = fsz;
@@ -558,73 +525,28 @@ static void gen_struct_def(struct ast_node *node)
 	struct_types[idx].total_size = off;
 }
 
-static void gen_struct_decl(struct ast_node *node)
-{
-	int offset;
-	int sz;
+static struct type *expr_type(struct ast_node *node);
+static int is_func(const char *name);
 
-	offset = declare_struct_var(node->children[0]->value, node->value);
-	if (node->child_count > 1) {
-		/* initializer must be a struct-returning call; result lands in rax:rdx */
-		sz = struct_types[lookup_struct(node->value)].total_size;
-		gen_expression(node->children[1]);
-		emit("\tmovq %%rax, %d(%%rbp)", offset);
-		if (sz > 8)
-			emit("\tmovq %%rdx, %d(%%rbp)", offset + 8);
-	}
-}
-
-static void gen_struct_ptr_decl(struct ast_node *node)
-{
-	declare_struct_ptr_var(node->children[0]->value, node->value);
-}
-
-static void gen_struct_array_decl(struct ast_node *node)
-{
-	declare_struct_array_var(node->children[0]->value, node->value,
-			atoi(node->children[1]->value));
-}
-
-/* the struct type an expression denotes or NULL when it is not a struct */
+/* the struct tag an expression denotes or NULL when there is not one */
 static const char *expr_struct_type(struct ast_node *node)
 {
-	struct var_entry *v;
-	struct glob_entry *g;
-	struct field_entry *f;
-	const char *t;
-	int idx;
+	struct type *ty = expr_type(node);
 
-	switch (node->type) {
-	case NODE_VAR:
-		g = lookup_global(node->value);
-		if (g)
-			return g->struct_type[0] ? g->struct_type : NULL;
-		v = try_lookup_var(node->value);
-		if (v && v->struct_type[0])
-			return v->struct_type;
+	while (is_ptr_like(ty))
+		ty = ty->base;
+	if (ty && ty->kind == TY_STRUCT)
+		return ty->tag;
+	return NULL;
+}
+
+static struct field_entry *expr_field(struct ast_node *node)
+{
+	const char *t = expr_struct_type(node->children[0]);
+
+	if (!t)
 		return NULL;
-	case NODE_CALL:
-		idx = lookup_retptr(node->value);
-		if (idx < 0 || !retptr_tab[idx].struct_type[0])
-			return NULL;
-		return retptr_tab[idx].struct_type;
-	case NODE_MEMBER:
-	case NODE_MEMBER_ASSIGN:
-	case NODE_PTR_MEMBER:
-	case NODE_PTR_MEMBER_ASSIGN:
-		t = expr_struct_type(node->children[0]);
-		if (!t)
-			return NULL;
-		f = lookup_field(lookup_struct(t), node->value);
-		return f->struct_type[0] ? f->struct_type : NULL;
-	case NODE_DEREF:
-		return expr_struct_type(node->children[0]);
-	case NODE_BINARY:
-		t = expr_struct_type(node->children[0]);
-		return t ? t : expr_struct_type(node->children[1]);
-	default:
-		return NULL;
-	}
+	return lookup_field(lookup_struct(t), node->value);
 }
 
 /* the object is either a named variable or an a[i] element */
@@ -649,15 +571,13 @@ static void gen_obj_addr(struct ast_node *node)
 static struct field_entry *gen_member_addr(struct ast_node *node)
 {
 	struct field_entry *f;
-	const char *t;
 
-	t = expr_struct_type(node->children[0]);
-	if (!t) {
+	f = expr_field(node);
+	if (!f) {
 		fprintf(stderr, "codegen: no struct type for member '%s'\n",
 				node->value);
 		exit(1);
 	}
-	f = lookup_field(lookup_struct(t), node->value);
 	/* arrow starts from a pointer value dot starts from the object itself */
 	if (node->type == NODE_PTR_MEMBER || node->type == NODE_PTR_MEMBER_ASSIGN)
 		gen_expression(node->children[0]);
@@ -670,24 +590,24 @@ static struct field_entry *gen_member_addr(struct ast_node *node)
 
 static void gen_member_load(struct ast_node *node)
 {
-	struct field_entry *f = gen_member_addr(node);
+	int sz = type_size(gen_member_addr(node)->ty);
 
-	if (f->size == 8)      emit("\tmovq (%%rax), %%rax");
-	else if (f->size == 1) emit("\tmovsbl (%%rax), %%eax");
-	else                   emit("\tmovl (%%rax), %%eax");
+	if (sz == 8)      emit("\tmovq (%%rax), %%rax");
+	else if (sz == 1) emit("\tmovsbl (%%rax), %%eax");
+	else              emit("\tmovl (%%rax), %%eax");
 }
 
 static void gen_member_store(struct ast_node *node)
 {
-	struct field_entry *f;
+	int sz;
 
 	gen_expression(node->children[1]);
 	emit("\tpush %%rax");
-	f = gen_member_addr(node);
+	sz = type_size(gen_member_addr(node)->ty);
 	emit("\tpop %%rcx");
-	if (f->size == 8)      emit("\tmovq %%rcx, (%%rax)");
-	else if (f->size == 1) emit("\tmovb %%cl, (%%rax)");
-	else                   emit("\tmovl %%ecx, (%%rax)");
+	if (sz == 8)      emit("\tmovq %%rcx, (%%rax)");
+	else if (sz == 1) emit("\tmovb %%cl, (%%rax)");
+	else              emit("\tmovl %%ecx, (%%rax)");
 }
 
 static void gen_number(struct ast_node *node)
@@ -852,239 +772,112 @@ static void gen_bitwise(const char *op, int is_uns, int is_long)
 	}
 }
 
-static int expr_is_unsigned(struct ast_node *node)
+/* pointer arithmetic keeps the pointer side and the usual widening picks the rest */
+static struct type *binary_type(struct ast_node *node)
 {
-	struct var_entry *v;
-	int i;
+	struct type *l = expr_type(node->children[0]);
+	struct type *r = expr_type(node->children[1]);
+	int uns = (l && l->is_unsigned) || (r && r->is_unsigned);
 
-	switch (node->type) {
-	case NODE_VAR:
-		if (lookup_global(node->value))
-			return 0;
-		v = lookup_var(node->value);
-		return v->is_unsigned;
-	case NODE_BINARY:
-	case NODE_UNARY:
-		for (i = 0; i < node->child_count; i++)
-			if (expr_is_unsigned(node->children[i])) return 1;
-		return 0;
-	case NODE_CAST:
-		return strcmp(node->value, "unsigned") == 0
-			|| strcmp(node->value, "unsigned_char") == 0;
-	default:
-		return 0;
+	if (node->value[1] == '\0'
+			&& (node->value[0] == '+' || node->value[0] == '-')) {
+		/* ptr minus ptr counts elements so the result is a plain int */
+		if (is_ptr_like(l) && is_ptr_like(r))
+			return node->value[0] == '-' ? ty_int : l;
+		if (is_ptr_like(l))
+			return l;
+		if (is_ptr_like(r))
+			return r;
 	}
+	if ((l && l->kind == TY_LONG) || (r && r->kind == TY_LONG))
+		return uns ? ty_ulong : ty_long;
+	return uns ? ty_uint : ty_int;
 }
 
-/* long means elem_size 8 and not a pointer */
-static int expr_is_long(struct ast_node *node)
-{
-	struct var_entry *v;
-	int i;
-
-	switch (node->type) {
-	case NODE_VAR:
-		if (lookup_global(node->value))
-			return 0;
-		v = lookup_var(node->value);
-		return v->elem_size == 8 && !v->is_ptr && !v->is_fptr;
-	case NODE_BINARY:
-	case NODE_UNARY:
-		for (i = 0; i < node->child_count; i++)
-			if (expr_is_long(node->children[i])) return 1;
-		return 0;
-	case NODE_CAST:
-	case NODE_VA_ARG:
-		return strcmp(node->value, "long") == 0;
-	default:
-		return 0;
-	}
-}
-
-static int expr_deref_size(struct ast_node *node);
-
-/* returns how many dims of an array expression are still unindexed
- * 0 means plain pointer rules apply */
-static int expr_dims(struct ast_node *node, int *dims, int *esz)
-{
-	struct var_entry *v;
-	struct glob_entry *g;
-	int inner[MAX_DIMS];
-	int inner_esz;
-	int nd;
-	int i;
-
-	switch (node->type) {
-	case NODE_VAR:
-		g = lookup_global(node->value);
-		if (g) {
-			if (!g->ndims)
-				return 0;
-			for (i = 0; i < g->ndims; i++)
-				dims[i] = g->dims[i];
-			*esz = g->elem_size;
-			return g->ndims;
-		}
-		v = try_lookup_var(node->value);
-		if (!v || !v->ndims)
-			return 0;
-		for (i = 0; i < v->ndims; i++)
-			dims[i] = v->dims[i];
-		*esz = v->elem_size;
-		return v->ndims;
-	case NODE_DEREF:
-		/* one index peels the outermost dim off and anything below stays an address */
-		nd = expr_dims(node->children[0], inner, esz);
-		if (nd < 2)
-			return 0;
-		for (i = 1; i < nd; i++)
-			dims[i - 1] = inner[i];
-		return nd - 1;
-	case NODE_BINARY:
-		if (node->value[1] != '\0')
-			return 0;
-		if (node->value[0] != '+' && node->value[0] != '-')
-			return 0;
-		nd = expr_dims(node->children[0], dims, esz);
-		if (nd) {
-			/* array minus array is an element count not an address */
-			if (expr_dims(node->children[1], inner, &inner_esz))
-				return 0;
-			return nd;
-		}
-		return expr_dims(node->children[1], dims, esz);
-	default:
-		return 0;
-	}
-}
-
-/* byte step of one index at this rank so every dim below the first times the element size */
-static int expr_index_stride(struct ast_node *node)
-{
-	int dims[MAX_DIMS];
-	int esz;
-	int nd;
-	int stride;
-	int i;
-
-	nd = expr_dims(node, dims, &esz);
-	if (nd == 0)
-		return 0;
-	stride = esz;
-	for (i = 1; i < nd; i++)
-		stride *= dims[i];
-	return stride;
-}
-
-/* what the elements of a pointer array point at 0 when the operand is not one */
-static int expr_elem_ptr(struct ast_node *node)
-{
-	struct var_entry *v;
-	struct glob_entry *g;
-	int l;
-
-	switch (node->type) {
-	case NODE_VAR:
-		g = lookup_global(node->value);
-		if (g)
-			return g->elem_ptr;
-		v = try_lookup_var(node->value);
-		return v ? v->elem_ptr : 0;
-	case NODE_BINARY:
-		if (node->value[1] != '\0')
-			return 0;
-		if (node->value[0] != '+' && node->value[0] != '-')
-			return 0;
-		l = expr_elem_ptr(node->children[0]);
-		return l ? l : expr_elem_ptr(node->children[1]);
-	case NODE_DEREF:
-		/* peeling a dim off a multi dim pointer array leaves the same pointee */
-		return expr_elem_ptr(node->children[0]);
-	default:
-		return 0;
-	}
-}
-
-/* 4 for int* 1 for char* the struct size for struct* 0 if not a pointer */
-static int expr_ptr_scale(struct ast_node *node)
+/* NULL when the node carries no type so every caller has to check */
+static struct type *expr_type(struct ast_node *node)
 {
 	struct var_entry *v;
 	struct glob_entry *g;
 	struct field_entry *f;
-	const char *t;
-	int l;
-	int r;
+	struct type *ty;
 	int idx;
-	int stride;
-
-	/* a multi dim array steps a whole row so its stride beats the plain element size */
-	stride = expr_index_stride(node);
-	if (stride)
-		return stride;
 
 	switch (node->type) {
-	/* inc and dec keep the name in value like a plain var so the same lookup works */
+	case NODE_NUMBER:
+	case NODE_SIZEOF_STRUCT:
+		return ty_int;
+	case NODE_STRING:
+		return ptr_to(ty_char);
+	/* inc dec and assign all keep the target name in value like a plain var */
 	case NODE_VAR:
+	case NODE_ASSIGN:
 	case NODE_PREFIX_INC:
 	case NODE_PREFIX_DEC:
 	case NODE_POSTFIX_INC:
 	case NODE_POSTFIX_DEC:
 		g = lookup_global(node->value);
 		if (g)
-			return g->is_ptr ? g->elem_size : 0;
-		v = lookup_var(node->value);
-		if (!v->is_ptr)
-			return 0;
-		return v->elem_size;
-	case NODE_MEMBER:
-	case NODE_PTR_MEMBER:
-		t = expr_struct_type(node->children[0]);
-		if (!t)
-			return 0;
-		f = lookup_field(lookup_struct(t), node->value);
-		if (!f->is_ptr)
-			return 0;
-		if (f->struct_type[0])
-			return struct_types[lookup_struct(f->struct_type)].total_size;
-		return f->elem_size;
+			return g->ty;
+		v = try_lookup_var(node->value);
+		if (v)
+			return v->ty;
+		/* a name that is neither has to be a function used as a value */
+		return is_func(node->value) ? ptr_to(ty_func) : NULL;
+	case NODE_DEREF:
+	case NODE_DEREF_ASSIGN:
+		ty = expr_type(node->children[0]);
+		return is_ptr_like(ty) ? ty->base : ty_int;
 	case NODE_ADDR_OF:
-		if (node->child_count > 0) {
-			t = expr_struct_type(node->children[0]);
-			if (t)
-				return struct_types[lookup_struct(t)].total_size;
-			if (node->children[0]->type == NODE_DEREF)
-				return expr_deref_size(node->children[0]->children[0]);
-			return 4;
-		}
+		/* &a[i] and &s.f carry the operand as a child since there is no plain name to take */
+		if (node->child_count > 0)
+			return ptr_to(expr_type(node->children[0]));
 		g = lookup_global(node->value);
 		if (g)
-			return g->elem_size;
-		return lookup_var(node->value)->elem_size;
-	case NODE_DEREF:
-		/* indexing a pointer array yields a pointer so its pointee sets the next scale */
-		return expr_elem_ptr(node->children[0]);
+			return ptr_to(g->ty);
+		v = try_lookup_var(node->value);
+		return ptr_to(v ? v->ty : ty_int);
+	case NODE_MEMBER:
+	case NODE_MEMBER_ASSIGN:
+	case NODE_PTR_MEMBER:
+	case NODE_PTR_MEMBER_ASSIGN:
+		f = expr_field(node);
+		return f ? f->ty : NULL;
 	case NODE_CALL:
 		idx = lookup_retptr(node->value);
-		return idx < 0 ? 0 : retptr_tab[idx].scale;
+		return idx < 0 ? ty_int : retptr_tab[idx].ty;
 	case NODE_CAST:
 	case NODE_VA_ARG:
-		if (strcmp(node->value, "int*") == 0)  return 4;
-		if (strcmp(node->value, "char*") == 0) return 1;
-		return 0;
+		return type_of_spelling(node->value, node->ptr_depth);
+	case NODE_UNARY:
+		return expr_type(node->children[0]);
+	case NODE_TERNARY:
+		ty = expr_type(node->children[1]);
+		return ty ? ty : expr_type(node->children[2]);
 	case NODE_BINARY:
-		if (node->value[1] != '\0')
-			return 0;
-		if (node->value[0] != '+' && node->value[0] != '-')
-			return 0;
-		l = expr_ptr_scale(node->children[0]);
-		r = expr_ptr_scale(node->children[1]);
-		/* ptr - ptr is an element count not a pointer */
-		if (node->value[0] == '-' && l && r)
-			return 0;
-		return l ? l : r;
+		return binary_type(node);
 	default:
-		return 0;
+		return NULL;
 	}
+}
+
+static int expr_ptr_scale(struct ast_node *node)
+{
+	return ptr_scale(expr_type(node));
+}
+
+static int expr_is_long(struct ast_node *node)
+{
+	struct type *ty = expr_type(node);
+
+	return ty && ty->kind == TY_LONG;
+}
+
+static int expr_is_unsigned(struct ast_node *node)
+{
+	struct type *ty = expr_type(node);
+
+	return ty && ty->is_unsigned;
 }
 
 /* rcx holds left rax holds right
@@ -1143,21 +936,25 @@ static void gen_binary(struct ast_node *node)
 		gen_logical(op);
 }
 
-static void emit_load(int off, int is_ptr, int is_unsigned, int esz)
+static void emit_load(int off, struct type *ty)
 {
-	if (is_ptr)                        emit("\tmovq %d(%%rbp), %%rax", off);
-	else if (esz == 8)                 emit("\tmovq %d(%%rbp), %%rax", off);
-	else if (esz == 1 && is_unsigned)  emit("\tmovzbl %d(%%rbp), %%eax", off);
-	else if (esz == 1)                 emit("\tmovsbl %d(%%rbp), %%eax", off);
-	else                               emit("\tmovl %d(%%rbp), %%eax", off);
+	int esz = type_size(ty);
+
+	if (ty->kind == TY_PTR)                 emit("\tmovq %d(%%rbp), %%rax", off);
+	else if (esz == 8)                      emit("\tmovq %d(%%rbp), %%rax", off);
+	else if (esz == 1 && ty->is_unsigned)   emit("\tmovzbl %d(%%rbp), %%eax", off);
+	else if (esz == 1)                      emit("\tmovsbl %d(%%rbp), %%eax", off);
+	else                                    emit("\tmovl %d(%%rbp), %%eax", off);
 }
 
-static void emit_store(int off, int is_ptr, int esz)
+static void emit_store(int off, struct type *ty)
 {
-	if (is_ptr)        emit("\tmovq %%rax, %d(%%rbp)", off);
-	else if (esz == 8) emit("\tmovq %%rax, %d(%%rbp)", off);
-	else if (esz == 1) emit("\tmovb %%al, %d(%%rbp)", off);
-	else               emit("\tmovl %%eax, %d(%%rbp)", off);
+	int esz = type_size(ty);
+
+	if (ty->kind == TY_PTR) emit("\tmovq %%rax, %d(%%rbp)", off);
+	else if (esz == 8)      emit("\tmovq %%rax, %d(%%rbp)", off);
+	else if (esz == 1)      emit("\tmovb %%al, %d(%%rbp)", off);
+	else                    emit("\tmovl %%eax, %d(%%rbp)", off);
 }
 
 static int is_func(const char *name)
@@ -1182,19 +979,20 @@ static void gen_var(struct ast_node *node)
 	}
 	g = lookup_global(node->value);
 	if (g) {
-		if (g->is_array)
+		/* an array and a struct both name storage so the value is its address */
+		if (g->ty->kind == TY_ARRAY || g->ty->kind == TY_STRUCT)
 			emit("\tleaq %s(%%rip), %%rax", node->value);
-		else if (g->is_ptr)
+		else if (g->ty->kind == TY_PTR)
 			emit("\tmovq %s(%%rip), %%rax", node->value);
 		else
 			emit("\tmovl %s(%%rip), %%eax", node->value);
 		return;
 	}
 	v = lookup_var(node->value);
-	if (v->is_array)
+	if (v->ty->kind == TY_ARRAY || v->ty->kind == TY_STRUCT)
 		emit("\tleaq %d(%%rbp), %%rax", v->offset);
 	else
-		emit_load(v->offset, v->is_ptr, v->is_unsigned, v->elem_size);
+		emit_load(v->offset, v->ty);
 }
 
 static void gen_assign(struct ast_node *node)
@@ -1205,14 +1003,14 @@ static void gen_assign(struct ast_node *node)
 	gen_expression(node->children[0]);
 	g = lookup_global(node->value);
 	if (g) {
-		if (g->is_ptr && !g->is_array)
+		if (g->ty->kind == TY_PTR)
 			emit("\tmovq %%rax, %s(%%rip)", node->value);
 		else
 			emit("\tmovl %%eax, %s(%%rip)", node->value);
 		return;
 	}
 	v = lookup_var(node->value);
-	emit_store(v->offset, v->is_ptr, v->elem_size);
+	emit_store(v->offset, v->ty);
 }
 
 static void gen_addr_of(struct ast_node *node)
@@ -1233,40 +1031,22 @@ static void gen_addr_of(struct ast_node *node)
 	emit("\tleaq %d(%%rbp), %%rax", lookup_var(node->value)->offset);
 }
 
-/* element size the pointer points to -- used to pick load instruction */
+/* the width a dereference moves through 4 when the operand is not a pointer */
 static int expr_deref_size(struct ast_node *node)
 {
-	struct var_entry *v;
-	struct glob_entry *g;
-	int scale;
+	struct type *ty = expr_type(node);
 
-	switch (node->type) {
-	case NODE_VAR:
-		g = lookup_global(node->value);
-		if (g) {
-			if (g->is_ptr)
-				return g->elem_size;
-			return 4;
-		}
-		v = lookup_var(node->value);
-		if (v->is_ptr)
-			return v->elem_size;
-		return 4;
-	default:
-		scale = expr_ptr_scale(node);
-		return scale ? scale : 4;
-	}
+	return is_ptr_like(ty) ? type_size(ty->base) : 4;
 }
 
 static void gen_deref(struct ast_node *node)
 {
+	struct type *ty = expr_type(node);
 	int esz = expr_deref_size(node->children[0]);
-	int dims[MAX_DIMS];
-	int desz;
 
 	gen_expression(node->children[0]);
 	/* a partly indexed multi dim array is a row address so there is nothing to load yet */
-	if (expr_dims(node, dims, &desz) > 0)
+	if (ty && ty->kind == TY_ARRAY)
 		return;
 	if (esz == 1)
 		emit("\tmovsbl (%%rax), %%eax");
@@ -1292,26 +1072,6 @@ static void gen_deref_assign(struct ast_node *node)
 		emit("\tmovl %%ecx, (%%rax)");
 }
 
-static void gen_ptr_declaration(struct ast_node *node)
-{
-	int offset = declare_var(node->value, 1, 0, 4);
-
-	if (node->child_count > 0) {
-		gen_expression(node->children[0]);
-		emit("\tmovq %%rax, %d(%%rbp)", offset);
-	}
-}
-
-static void gen_char_ptr_declaration(struct ast_node *node)
-{
-	int offset = declare_var(node->value, 1, 0, 1);
-
-	if (node->child_count > 0) {
-		gen_expression(node->children[0]);
-		emit("\tmovq %%rax, %d(%%rbp)", offset);
-	}
-}
-
 /* delta is +1 or -1
  * post means the old value loads before the mutation */
 static void gen_inc_dec(struct ast_node *node, int delta, int post)
@@ -1325,11 +1085,12 @@ static void gen_inc_dec(struct ast_node *node, int delta, int post)
 	op = (delta > 0) ? "add" : "sub";
 	g = lookup_global(node->value);
 	if (g) {
-		if (g->is_ptr && !g->is_array) {
+		if (g->ty->kind == TY_PTR) {
 			/* pointer steps by element size not 1 */
 			if (post)
 				emit("\tmovq %s(%%rip), %%rax", node->value);
-			emit("\t%sq $%d, %s(%%rip)", op, g->elem_size, node->value);
+			emit("\t%sq $%d, %s(%%rip)", op, type_size(g->ty->base),
+					node->value);
 			if (!post)
 				emit("\tmovq %s(%%rip), %%rax", node->value);
 		} else {
@@ -1343,15 +1104,16 @@ static void gen_inc_dec(struct ast_node *node, int delta, int post)
 	}
 	v = lookup_var(node->value);
 	off = v->offset;
-	esz = v->elem_size;
+	esz = type_size(v->ty);
 	if (post)
-		emit_load(off, v->is_ptr, v->is_unsigned, esz);
-	if (v->is_ptr)         emit("\t%sq $%d, %d(%%rbp)", op, esz, off);
+		emit_load(off, v->ty);
+	if (v->ty->kind == TY_PTR)
+		emit("\t%sq $%d, %d(%%rbp)", op, type_size(v->ty->base), off);
 	else if (esz == 8)     emit("\t%sq $1, %d(%%rbp)", op, off);
 	else if (esz == 1)     emit("\t%sb $1, %d(%%rbp)", op, off);
 	else                   emit("\t%sl $1, %d(%%rbp)", op, off);
 	if (!post)
-		emit_load(off, v->is_ptr, v->is_unsigned, esz);
+		emit_load(off, v->ty);
 }
 
 static void gen_fptr_call(struct ast_node *node, struct var_entry *fv)
@@ -1385,11 +1147,6 @@ static int is_vararg_func(const char *name)
 	return 0;
 }
 
-static void gen_va_list_decl(struct ast_node *node)
-{
-	declare_valist_var(node->value);
-}
-
 static void gen_va_start(struct ast_node *node)
 {
 	struct var_entry *v;
@@ -1410,14 +1167,14 @@ static void gen_va_start(struct ast_node *node)
 static void gen_va_arg(struct ast_node *node)
 {
 	struct var_entry *v;
+	struct type *ty;
 	int lbl;
 	int wide;
 
 	v = lookup_var(node->children[0]->value);
 	lbl = label_count++;
-	wide = strcmp(node->value, "long") == 0
-			|| strcmp(node->value, "int*") == 0
-			|| strcmp(node->value, "char*") == 0;
+	ty = expr_type(node);
+	wide = ty->kind == TY_LONG || ty->kind == TY_PTR;
 
 	emit("\tmovl %d(%%rbp), %%eax", v->offset);
 	emit("\tcmpl $%d, %%eax", VA_SAVE_SIZE);
@@ -1447,7 +1204,7 @@ static void gen_push_arg(struct ast_node *arg, struct var_entry *sv, int nregs)
 		/* struct > 8B: push HIGH first (deeper) so LOW ends up on top */
 		emit("\tpushq %d(%%rbp)", sv->offset + 8);
 		emit("\tpushq %d(%%rbp)", sv->offset);
-	} else if (sv != NULL && sv->is_struct && !sv->is_array) {
+	} else if (sv != NULL && sv->ty->kind == TY_STRUCT) {
 		/* struct <= 8B fits in one reg: single qword push */
 		emit("\tpushq %d(%%rbp)", sv->offset);
 	} else {
@@ -1468,14 +1225,13 @@ static void gen_call(struct ast_node *node)
 	int j;
 	int nargs;
 	int total_regs;
-	int sidx;
 	int nstack;
 	int pad;
 
 	struct var_entry *fv;
 
 	fv = try_lookup_var(node->value);
-	if (fv && fv->is_fptr) {
+	if (fv && fv->ty->kind == TY_PTR && fv->ty->base->kind == TY_FUNC) {
 		gen_fptr_call(node, fv);
 		return;
 	}
@@ -1488,10 +1244,8 @@ static void gen_call(struct ast_node *node)
 		if (node->children[i]->type == NODE_VAR) {
 			svs[i] = try_lookup_var(node->children[i]->value);
 			/* a struct array arg decays to a pointer so only real values go through regs */
-			if (svs[i] && svs[i]->is_struct && !svs[i]->is_array) {
-				sidx = lookup_struct(svs[i]->struct_type);
-				nregs[i] = (struct_types[sidx].total_size + 7) / 8;
-			}
+			if (svs[i] && svs[i]->ty->kind == TY_STRUCT)
+				nregs[i] = (type_size(svs[i]->ty) + 7) / 8;
 		}
 		reg_base[i] = total_regs;
 		total_regs += nregs[i];
@@ -1544,16 +1298,15 @@ static void gen_string(struct ast_node *node)
 /* truncation or extension to match the target type */
 static void gen_cast(struct ast_node *node)
 {
-	const char *t = node->value;
+	struct type *ty = expr_type(node);
 
 	gen_expression(node->children[0]);
-	if (strcmp(t, "char") == 0)
-		emit("\tmovsbl %%al, %%eax");
-	else if (strcmp(t, "unsigned_char") == 0)
-		emit("\tmovzbl %%al, %%eax");
-	else if (strcmp(t, "long") == 0)
+	/* a pointer or a plain int is already the right width in the register */
+	if (ty->kind == TY_CHAR)
+		emit(ty->is_unsigned ? "\tmovzbl %%al, %%eax"
+				: "\tmovsbl %%al, %%eax");
+	else if (ty->kind == TY_LONG)
 		emit("\tmovslq %%eax, %%rax");
-	/* int unsigned int* char* -- value already in the right register */
 }
 
 /* like if/else but the chosen branch lands in eax */
@@ -1632,113 +1385,52 @@ static void gen_return(struct ast_node *node)
 	emit("\tret");
 }
 
-static void gen_declaration(struct ast_node *node)
+static void gen_local_decl(struct ast_node *node)
 {
-	int offset = declare_var(node->value, 0, 0, 4);
-
-	if (node->child_count > 0) {
-		gen_expression(node->children[0]);
-		emit("\tmovl %%eax, %d(%%rbp)", offset);
-	}
-}
-
-static void gen_char_declaration(struct ast_node *node)
-{
-	int offset = declare_var(node->value, 0, 0, 1);
-
-	if (node->child_count > 0) {
-		gen_expression(node->children[0]);
-		emit("\tmovb %%al, %d(%%rbp)", offset);
-	}
-}
-
-static void gen_unsigned_declaration(struct ast_node *node)
-{
-	int offset = declare_var(node->value, 0, 1, 4);
-
-	if (node->child_count > 0) {
-		gen_expression(node->children[0]);
-		emit("\tmovl %%eax, %d(%%rbp)", offset);
-	}
-}
-
-static void gen_unsigned_char_declaration(struct ast_node *node)
-{
-	int offset = declare_var(node->value, 0, 1, 1);
-
-	if (node->child_count > 0) {
-		gen_expression(node->children[0]);
-		emit("\tmovb %%al, %d(%%rbp)", offset);
-	}
-}
-
-static void gen_long_declaration(struct ast_node *node)
-{
-	int offset = declare_var(node->value, 0, 0, 8);
-
-	if (node->child_count > 0) {
-		gen_expression(node->children[0]);
-		/* int-sized results need sign extension to fill the 64 bit slot */
-		if (!expr_is_long(node->children[0]))
-			emit("\tmovslq %%eax, %%rax");
-		emit("\tmovq %%rax, %d(%%rbp)", offset);
-	}
-}
-
-static void gen_array_decl(struct ast_node *node)
-{
-	int i;
-	int base;
-	int dims[MAX_DIMS];
-	int nd;
-
-	nd = dim_list(node->children[0], dims);
-	base = declare_array(node->value, dims, nd, 4, 0);
-	for (i = 1; i < node->child_count; i++) {
-		gen_expression(node->children[i]);
-		emit("\tmovl %%eax, %d(%%rbp)", base + (i - 1) * 4);
-	}
-}
-
-static void gen_char_array_decl(struct ast_node *node)
-{
-	int i;
-	int base;
-	int dims[MAX_DIMS];
-	int nd;
-
-	nd = dim_list(node->children[0], dims);
-	base = declare_array(node->value, dims, nd, 1, 0);
-	for (i = 1; i < node->child_count; i++) {
-		gen_expression(node->children[i]);
-		emit("\tmovb %%al, %d(%%rbp)", base + (i - 1));
-	}
-}
-
-/* elements are addresses so each slot is 8 bytes regardless of what it points at */
-static void gen_ptr_array_decl(struct ast_node *node, int elem_ptr)
-{
-	int i;
-	int base;
-	int dims[MAX_DIMS];
-	int nd;
-
-	nd = dim_list(node->children[0], dims);
-	base = declare_array(node->value, dims, nd, 8, elem_ptr);
-	for (i = 1; i < node->child_count; i++) {
-		gen_expression(node->children[i]);
-		emit("\tmovq %%rax, %d(%%rbp)", base + (i - 1) * 8);
-	}
-}
-
-static void gen_fptr_declaration(struct ast_node *node)
-{
+	struct type *ty;
+	struct type *ety;
 	int offset;
+	int i;
 
-	offset = declare_fptr_var(node->value);
-	if (node->child_count > 0) {
-		gen_expression(node->children[0]);
-		emit("\tmovq %%rax, %d(%%rbp)", offset);
+	ty = decl_type(node);
+	offset = declare_var(decl_name(node), ty);
+
+	switch (node->type) {
+	case NODE_ARRAY_DECL:
+	case NODE_CHAR_ARRAY_DECL:
+	case NODE_PTR_ARRAY_DECL:
+	case NODE_CHAR_PTR_ARRAY_DECL:
+		/* the brace nesting is already flat so elements land at the innermost size */
+		ety = elem_scalar(ty);
+		for (i = 1; i < node->child_count; i++) {
+			gen_expression(node->children[i]);
+			emit_store(offset + (i - 1) * type_size(ety), ety);
+		}
+		break;
+	case NODE_STRUCT_DECL:
+		/* the only initializer a struct local takes is a struct returning call
+		 * whose result arrives in rax:rdx */
+		if (node->child_count > 1) {
+			gen_expression(node->children[1]);
+			emit("\tmovq %%rax, %d(%%rbp)", offset);
+			if (type_size(ty) > 8)
+				emit("\tmovq %%rdx, %d(%%rbp)", offset + 8);
+		}
+		break;
+	/* the children of these carry the name and the length not a value */
+	case NODE_STRUCT_PTR_DECL:
+	case NODE_STRUCT_ARRAY_DECL:
+	case NODE_VA_LIST_DECL:
+		break;
+	default:
+		if (node->child_count > 0) {
+			gen_expression(node->children[0]);
+			/* an int sized result has to be widened to fill a 64 bit slot */
+			if (ty->kind == TY_LONG && !expr_is_long(node->children[0]))
+				emit("\tmovslq %%eax, %%rax");
+			emit_store(offset, ty);
+		}
+		break;
 	}
 }
 
@@ -1916,22 +1608,22 @@ static void gen_statement(struct ast_node *node)
 {
 	switch (node->type) {
 	case NODE_RETURN:		gen_return(node);		break;
-	case NODE_DECLARATION:			gen_declaration(node);			break;
-	case NODE_CHAR_DECLARATION:		gen_char_declaration(node);		break;
-	case NODE_UNSIGNED_DECLARATION:		gen_unsigned_declaration(node);		break;
-	case NODE_UNSIGNED_CHAR_DECLARATION:	gen_unsigned_char_declaration(node);	break;
-	case NODE_LONG_DECLARATION:		gen_long_declaration(node);		break;
-	case NODE_PTR_DECLARATION:		gen_ptr_declaration(node);		break;
-	case NODE_CHAR_PTR_DECLARATION:		gen_char_ptr_declaration(node);		break;
-	case NODE_ARRAY_DECL:		gen_array_decl(node);		break;
-	case NODE_CHAR_ARRAY_DECL:	gen_char_array_decl(node);	break;
-	case NODE_PTR_ARRAY_DECL:	gen_ptr_array_decl(node, 4);	break;
-	case NODE_CHAR_PTR_ARRAY_DECL:	gen_ptr_array_decl(node, 1);	break;
-	case NODE_FPTR_DECLARATION:	gen_fptr_declaration(node);	break;
-	case NODE_STRUCT_DECL:		gen_struct_decl(node);		break;
-	case NODE_STRUCT_PTR_DECL:	gen_struct_ptr_decl(node);	break;
-	case NODE_STRUCT_ARRAY_DECL:	gen_struct_array_decl(node);	break;
-	case NODE_VA_LIST_DECL:		gen_va_list_decl(node);		break;
+	case NODE_DECLARATION:
+	case NODE_CHAR_DECLARATION:
+	case NODE_UNSIGNED_DECLARATION:
+	case NODE_UNSIGNED_CHAR_DECLARATION:
+	case NODE_LONG_DECLARATION:
+	case NODE_PTR_DECLARATION:
+	case NODE_CHAR_PTR_DECLARATION:
+	case NODE_ARRAY_DECL:
+	case NODE_CHAR_ARRAY_DECL:
+	case NODE_PTR_ARRAY_DECL:
+	case NODE_CHAR_PTR_ARRAY_DECL:
+	case NODE_FPTR_DECLARATION:
+	case NODE_STRUCT_DECL:
+	case NODE_STRUCT_PTR_DECL:
+	case NODE_STRUCT_ARRAY_DECL:
+	case NODE_VA_LIST_DECL:		gen_local_decl(node);		break;
 	case NODE_VA_START:		gen_va_start(node);		break;
 	case NODE_VA_END:		break;
 	case NODE_COMPOUND:		gen_compound(node);		break;
@@ -1975,51 +1667,14 @@ static void gen_statement(struct ast_node *node)
 /* the body gets walked before codegen since the frame size must be known upfront */
 static int count_stack_bytes(struct ast_node *node)
 {
+	struct type *ty;
 	int i;
 	int total = 0;
-	int n;
-	int bytes;
-	int sidx;
 
-	if (node->type == NODE_DECLARATION
-			|| node->type == NODE_PTR_DECLARATION
-			|| node->type == NODE_CHAR_DECLARATION
-			|| node->type == NODE_CHAR_PTR_DECLARATION
-			|| node->type == NODE_UNSIGNED_DECLARATION
-			|| node->type == NODE_UNSIGNED_CHAR_DECLARATION
-			|| node->type == NODE_LONG_DECLARATION
-			|| node->type == NODE_FPTR_DECLARATION)
-		return 8;
-	if (node->type == NODE_VA_LIST_DECL)
-		return VA_LIST_SIZE;
-	if (node->type == NODE_ARRAY_DECL) {
-		n = dim_total(node->children[0]);
-		bytes = n * 4;
-		if (bytes % 8 != 0)
-			bytes += 8 - (bytes % 8);
-		return bytes;
-	}
-	if (node->type == NODE_CHAR_ARRAY_DECL) {
-		n = dim_total(node->children[0]);
-		bytes = n * 1;
-		if (bytes % 8 != 0)
-			bytes += 8 - (bytes % 8);
-		return bytes;
-	}
-	if (node->type == NODE_PTR_ARRAY_DECL
-			|| node->type == NODE_CHAR_PTR_ARRAY_DECL)
-		return dim_total(node->children[0]) * 8;
-	if (node->type == NODE_STRUCT_PTR_DECL)
-		return 8;
-	if (node->type == NODE_STRUCT_DECL || node->type == NODE_STRUCT_ARRAY_DECL) {
-		sidx = lookup_struct(node->value);
-		bytes = struct_types[sidx].total_size;
-		if (node->type == NODE_STRUCT_ARRAY_DECL)
-			bytes *= atoi(node->children[1]->value);
-		if (bytes % 8 != 0)
-			bytes += 8 - (bytes % 8);
-		return bytes;
-	}
+	ty = decl_type(node);
+	if (ty)
+		return slot_bytes(ty);
+	/* the switch value needs a hidden slot to compare every case against */
 	if (node->type == NODE_SWITCH)
 		total += 8;
 	for (i = 0; i < node->child_count; i++)
@@ -2040,20 +1695,16 @@ static void gen_function(struct ast_node *node)
 	};
 	struct ast_node *p;
 	struct ast_node *body;
+	struct type *pty;
 	int i;
 	int num_params;
 	int num_locals;
 	int alloc_size;
 	int param_bytes;
 	int offset;
-	int is_ptr_param;
-	int is_char_param;
-	int is_unsigned;
-	int elem_sz;
 	int has_sret;
 	int param_start;
 	int reg_idx;
-	int sidx;
 	int sz;
 	int is_variadic;
 
@@ -2091,18 +1742,8 @@ static void gen_function(struct ast_node *node)
 
 	/* sum actual param sizes since struct val params can exceed 8 bytes */
 	param_bytes = 0;
-	for (i = 0; i < num_params; i++) {
-		p = node->children[param_start + i];
-		if (p->type == NODE_STRUCT_VAL_PARAM) {
-			sidx = lookup_struct(p->value);
-			sz = struct_types[sidx].total_size;
-			if (sz % 8 != 0)
-				sz += 8 - (sz % 8);
-			param_bytes += sz;
-		} else {
-			param_bytes += 8;
-		}
-	}
+	for (i = 0; i < num_params; i++)
+		param_bytes += slot_bytes(decl_type(node->children[param_start + i]));
 
 	/* rounded up since the abi wants rsp 16 byte aligned at call time */
 	num_locals = count_stack_bytes(body);
@@ -2128,44 +1769,19 @@ static void gen_function(struct ast_node *node)
 	reg_idx = 0;
 	for (i = 0; i < num_params && reg_idx < 6; i++) {
 		p = node->children[param_start + i];
-		if (p->type == NODE_STRUCT_VAL_PARAM) {
-			sidx = lookup_struct(p->value);
-			sz = struct_types[sidx].total_size;
-			offset = declare_struct_var(p->children[0]->value, p->value);
+		pty = decl_type(p);
+		offset = declare_var(decl_name(p), pty);
+		sz = type_size(pty);
+		if (pty->kind == TY_STRUCT) {
 			emit("\tmovq %s, %d(%%rbp)", ptr_param_regs[reg_idx], offset);
 			if (sz > 8 && reg_idx + 1 < 6)
 				emit("\tmovq %s, %d(%%rbp)", ptr_param_regs[reg_idx + 1], offset + 8);
 			reg_idx += (sz + 7) / 8;
 			continue;
 		}
-		if (p->type == NODE_STRUCT_PTR_DECL) {
-			offset = declare_struct_ptr_var(
-					p->children[0]->value, p->value);
+		if (pty->kind == TY_PTR || sz == 8)
 			emit("\tmovq %s, %d(%%rbp)", ptr_param_regs[reg_idx], offset);
-			reg_idx++;
-			continue;
-		}
-		if (p->type == NODE_FPTR_DECLARATION) {
-			offset = declare_fptr_var(p->value);
-			emit("\tmovq %s, %d(%%rbp)", ptr_param_regs[reg_idx], offset);
-			reg_idx++;
-			continue;
-		}
-		is_ptr_param = p->type == NODE_PTR_DECLARATION
-				|| p->type == NODE_CHAR_PTR_DECLARATION;
-		is_char_param = p->type == NODE_CHAR_DECLARATION
-				|| p->type == NODE_CHAR_PTR_DECLARATION
-				|| p->type == NODE_UNSIGNED_CHAR_DECLARATION;
-		is_unsigned = p->type == NODE_UNSIGNED_DECLARATION
-				|| p->type == NODE_UNSIGNED_CHAR_DECLARATION;
-		if (p->type == NODE_LONG_DECLARATION)
-			elem_sz = 8;
-		else
-			elem_sz = is_char_param ? 1 : 4;
-		offset = declare_var(p->value, is_ptr_param, is_unsigned, elem_sz);
-		if (is_ptr_param || elem_sz == 8)
-			emit("\tmovq %s, %d(%%rbp)", ptr_param_regs[reg_idx], offset);
-		else if (is_char_param)
+		else if (sz == 1)
 			emit("\tmovb %s, %d(%%rbp)", byte_param_regs[reg_idx], offset);
 		else
 			emit("\tmovl %s, %d(%%rbp)", param_regs[reg_idx], offset);
@@ -2196,16 +1812,6 @@ static int is_global_node(enum node_type t)
 			|| t == NODE_GLOBAL_STRUCT_ARRAY;
 }
 
-/* struct globals keep the type in value so the label comes from the child */
-static const char *global_label(struct ast_node *node)
-{
-	if (node->type == NODE_GLOBAL_STRUCT
-			|| node->type == NODE_GLOBAL_STRUCT_PTR
-			|| node->type == NODE_GLOBAL_STRUCT_ARRAY)
-		return node->children[0]->value;
-	return node->value;
-}
-
 /* a pointer sitting in the data section can only name something the linker resolves */
 static void emit_data_ptr(struct ast_node *node)
 {
@@ -2221,7 +1827,7 @@ static void emit_data_ptr(struct ast_node *node)
 	}
 	if (node->type == NODE_VAR) {
 		g = lookup_global(node->value);
-		if ((g && g->is_array) || is_func(node->value)) {
+		if ((g && g->ty->kind == TY_ARRAY) || is_func(node->value)) {
 			emit("\t.quad %s", node->value);
 			return;
 		}
@@ -2258,25 +1864,27 @@ static void emit_struct_data(struct ast_node *node, int first, int count, int si
 	int given = node->child_count - first;
 	int e;
 	int i;
+	int fsz;
 	int pos;
 
 	for (e = 0; e < count; e++) {
 		pos = 0;
 		for (i = 0; i < nf; i++) {
 			f = &struct_flds[sidx][i];
+			fsz = type_size(f->ty);
 			if (f->offset > pos)
 				emit("\t.zero %d", f->offset - pos);
 			if (e * nf + i >= given)
-				emit("\t.zero %d", f->size);
-			else if (f->size == 8)
+				emit("\t.zero %d", fsz);
+			else if (fsz == 8)
 				emit_data_ptr(node->children[first + e * nf + i]);
-			else if (f->size == 1)
+			else if (fsz == 1)
 				emit("\t.byte %d",
 						const_eval(node->children[first + e * nf + i]));
 			else
 				emit("\t.long %d",
 						const_eval(node->children[first + e * nf + i]));
-			pos = f->offset + f->size;
+			pos = f->offset + fsz;
 		}
 		if (struct_types[sidx].total_size > pos)
 			emit("\t.zero %d", struct_types[sidx].total_size - pos);
@@ -2285,7 +1893,8 @@ static void emit_struct_data(struct ast_node *node, int first, int count, int si
 
 static void gen_global(struct ast_node *node)
 {
-	const char *name = global_label(node);
+	const char *name = decl_name(node);
+	struct type *ty;
 	int total;
 	int first;
 	int esz;
@@ -2329,13 +1938,9 @@ static void gen_global(struct ast_node *node)
 			emit("\t.zero %d", struct_types[sidx].total_size * total);
 		break;
 	default:
-		total = dim_total(node->children[0]);
-		if (node->type == NODE_GLOBAL_ARRAY)
-			esz = 4;
-		else if (node->type == NODE_GLOBAL_CHAR_ARRAY)
-			esz = 1;
-		else
-			esz = 8;
+		ty = decl_type(node);
+		esz = type_size(elem_scalar(ty));
+		total = type_size(ty) / esz;
 		emit("\t.align 8");
 		emit("%s:", name);
 		if (node->child_count > 1)
@@ -2404,52 +2009,14 @@ static void gen_program(struct ast_node *node)
 				&& fn->children[0]->type == NODE_PTR_RET
 				&& lookup_retptr(fn->value) < 0
 				&& retptr_count < MAX_RETPTR)
-			declare_retptr(fn->value, fn->children[0]->value);
+			declare_retptr(fn->value, fn->children[0]->value,
+					fn->children[0]->ptr_depth);
 	}
 
-	for (i = 0; i < node->child_count; i++) {
-		switch (node->children[i]->type) {
-		case NODE_GLOBAL:
-			declare_global(node->children[i]->value, 0, 0, 4);
-			break;
-		case NODE_GLOBAL_PTR:
-			declare_global(node->children[i]->value, 1, 0, 4);
-			break;
-		case NODE_GLOBAL_CHAR_PTR:
-			declare_global(node->children[i]->value, 1, 0, 1);
-			break;
-		case NODE_GLOBAL_ARRAY:
-			declare_global_array(node->children[i]->value,
-					node->children[i]->children[0], 4, 0);
-			break;
-		case NODE_GLOBAL_CHAR_ARRAY:
-			declare_global_array(node->children[i]->value,
-					node->children[i]->children[0], 1, 0);
-			break;
-		case NODE_GLOBAL_PTR_ARRAY:
-			declare_global_array(node->children[i]->value,
-					node->children[i]->children[0], 8, 4);
-			break;
-		case NODE_GLOBAL_CHAR_PTR_ARRAY:
-			declare_global_array(node->children[i]->value,
-					node->children[i]->children[0], 8, 1);
-			break;
-		case NODE_GLOBAL_STRUCT:
-			declare_global_struct(node->children[i]->children[0]->value,
-					node->children[i]->value, 0, 0);
-			break;
-		case NODE_GLOBAL_STRUCT_PTR:
-			declare_global_struct(node->children[i]->children[0]->value,
-					node->children[i]->value, 1, 0);
-			break;
-		case NODE_GLOBAL_STRUCT_ARRAY:
-			declare_global_struct(node->children[i]->children[0]->value,
-					node->children[i]->value, 1, 1);
-			break;
-		default:
-			break;
-		}
-	}
+	for (i = 0; i < node->child_count; i++)
+		if (is_global_node(node->children[i]->type))
+			declare_global(decl_name(node->children[i]),
+					decl_type(node->children[i]));
 
 	if (string_count > 0) {
 		emit("\t.section .rodata");
@@ -2479,5 +2046,6 @@ static void gen_program(struct ast_node *node)
 void codegen(struct ast_node *ast, FILE *output)
 {
 	out = output;
+	init_types();
 	gen_program(ast);
 }

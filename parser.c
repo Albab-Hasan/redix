@@ -31,6 +31,7 @@ static struct ast_node *make_node(enum node_type type, char *value)
 	node->value = value ? strdup(value) : NULL;
 	node->child_count = 0;
 	node->children = NULL;
+	node->ptr_depth = 0;
 	return node;
 }
 
@@ -99,19 +100,44 @@ static int skip_enum_type(void)
 	return 1;
 }
 
-/* the returned string is the same spelling codegen matches on for casts */
-static const char *parse_type_name(void)
+/* each star is one more level of indirection so the count is the whole pointer type */
+static int count_stars(void)
 {
+	int n;
+
+	n = 0;
+	skip_qualifiers();
+	while (current()->type == TOKEN_STAR) {
+		n++;
+		position++;
+		skip_qualifiers();
+	}
+	return n;
+}
+
+/* the returned string is the base spelling codegen matches on
+ * and depth is an out param carrying the stars that followed it */
+static const char *parse_type_name(int *depth)
+{
+	static char tag[64];
 	int is_char;
 	int is_long;
 	int is_unsigned;
-	int is_ptr;
+	int is_void;
 
 	is_char = 0;
 	is_long = 0;
 	is_unsigned = 0;
-	is_ptr = 0;
+	is_void = 0;
 	skip_qualifiers();
+	/* a tag cannot collide with a base spelling since every base name is a keyword */
+	if (current()->type == TOKEN_STRUCT) {
+		position++;
+		strncpy(tag, expect(TOKEN_IDENTIFIER)->value, 63);
+		tag[63] = '\0';
+		*depth = count_stars();
+		return tag;
+	}
 	if (!skip_enum_type()) {
 		if (current()->type == TOKEN_UNSIGNED) {
 			is_unsigned = 1;
@@ -127,18 +153,17 @@ static const char *parse_type_name(void)
 		} else if (current()->type == TOKEN_CHAR) {
 			is_char = 1;
 			position++;
+		} else if (current()->type == TOKEN_VOID) {
+			is_void = 1;
+			position++;
 		}
 	}
-	if (current()->type == TOKEN_STAR) {
-		is_ptr = 1;
-		position++;
-	}
-	if      (is_ptr && is_char)        return "char*";
-	else if (is_ptr)                   return "int*";
-	else if (is_long)                  return "long";
+	*depth = count_stars();
+	if      (is_long)                  return "long";
 	else if (is_unsigned && is_char)   return "unsigned_char";
 	else if (is_unsigned)              return "unsigned";
 	else if (is_char)                  return "char";
+	else if (is_void)                  return "void";
 	return "int";
 }
 
@@ -273,12 +298,14 @@ static struct ast_node *parse_unary(void)
 	if (current()->type == TOKEN_VA_ARG) {
 		struct ast_node *va;
 		struct token *ap;
+		int depth;
 
 		position++;
 		expect(TOKEN_LPAREN);
 		ap = expect(TOKEN_IDENTIFIER);
 		expect(TOKEN_COMMA);
-		va = make_node(NODE_VA_ARG, (char *)parse_type_name());
+		va = make_node(NODE_VA_ARG, (char *)parse_type_name(&depth));
+		va->ptr_depth = depth;
 		expect(TOKEN_RPAREN);
 		add_child(va, make_node(NODE_VAR, ap->value));
 		return va;
@@ -292,8 +319,7 @@ static struct ast_node *parse_unary(void)
 		if (current()->type == TOKEN_STRUCT) {
 			position++;
 			tok = expect(TOKEN_IDENTIFIER);
-			if (current()->type == TOKEN_STAR) {
-				position++;
+			if (count_stars() > 0) {
 				expect(TOKEN_RPAREN);
 				return make_node(NODE_NUMBER, "8");
 			}
@@ -303,22 +329,33 @@ static struct ast_node *parse_unary(void)
 		}
 		if (skip_enum_type()) {
 			sz = 4;
-			if (current()->type == TOKEN_STAR) {
+		} else if (current()->type == TOKEN_UNSIGNED
+				|| current()->type == TOKEN_INT
+				|| current()->type == TOKEN_CHAR
+				|| current()->type == TOKEN_LONG
+				|| current()->type == TOKEN_VOID) {
+			/* unsigned can stand alone so the base type after it is optional */
+			sz = 4;
+			if (current()->type == TOKEN_UNSIGNED)
 				position++;
-				sz = 8;
-			}
-		} else if (current()->type == TOKEN_INT || current()->type == TOKEN_CHAR) {
-			sz = (current()->type == TOKEN_CHAR) ? 1 : 4;
-			position++;
-			if (current()->type == TOKEN_STAR) {
+			if (current()->type == TOKEN_CHAR || current()->type == TOKEN_VOID) {
+				sz = 1;
 				position++;
+			} else if (current()->type == TOKEN_LONG) {
 				sz = 8;
+				position++;
+				if (current()->type == TOKEN_INT)
+					position++;
+			} else if (current()->type == TOKEN_INT) {
+				position++;
 			}
 		} else {
 			fprintf(stderr, "parser: sizeof expects a type\n");
 			exit(1);
 			sz = 0;
 		}
+		if (count_stars() > 0)
+			sz = 8;
 		expect(TOKEN_RPAREN);
 		sprintf(buf, "%d", sz);
 		return make_node(NODE_NUMBER, buf);
@@ -330,15 +367,19 @@ static struct ast_node *parse_unary(void)
 				|| tokens[position + 1].type == TOKEN_CHAR
 				|| tokens[position + 1].type == TOKEN_LONG
 				|| tokens[position + 1].type == TOKEN_UNSIGNED
+				|| tokens[position + 1].type == TOKEN_VOID
+				|| tokens[position + 1].type == TOKEN_STRUCT
 				|| tokens[position + 1].type == TOKEN_ENUM
 				|| tokens[position + 1].type == TOKEN_CONST)) {
 		struct ast_node *node;
 		const char *cast_type;
+		int depth;
 
 		position++; /* consume ( */
-		cast_type = parse_type_name();
+		cast_type = parse_type_name(&depth);
 		expect(TOKEN_RPAREN);
 		node = make_node(NODE_CAST, (char *)cast_type);
+		node->ptr_depth = depth;
 		add_child(node, parse_unary());
 		return node;
 	}
@@ -644,6 +685,7 @@ static struct ast_node *parse_declaration_inner(void)
 	int is_enum;
 	int infer_size;
 	int init_count;
+	int nstars;
 
 	is_char = 0;
 	is_unsigned = 0;
@@ -663,6 +705,10 @@ static struct ast_node *parse_declaration_inner(void)
 	} else if (current()->type == TOKEN_INT) {
 		position++;
 	} else if (current()->type == TOKEN_CHAR) {
+		is_char = 1;
+		position++;
+	} else if (current()->type == TOKEN_VOID) {
+		/* a void pointer steps a byte at a time so it rides the char path */
 		is_char = 1;
 		position++;
 	} else if (!is_unsigned && !is_enum) {
@@ -689,13 +735,8 @@ static struct ast_node *parse_declaration_inner(void)
 		}
 		return node;
 	}
-	is_ptr = 0;
-	skip_qualifiers();
-	if (current()->type == TOKEN_STAR) {
-		is_ptr = 1;
-		position++;
-		skip_qualifiers();
-	}
+	nstars = count_stars();
+	is_ptr = nstars > 0;
 	name = expect(TOKEN_IDENTIFIER);
 	if (current()->type == TOKEN_LBRACKET) {
 		position++;
@@ -724,6 +765,7 @@ static struct ast_node *parse_declaration_inner(void)
 			if (infer_size)
 				patch_inferred_size(size, init_count);
 		}
+		node->ptr_depth = nstars;
 		return node;
 	}
 	if (is_ptr)
@@ -738,6 +780,7 @@ static struct ast_node *parse_declaration_inner(void)
 	else
 		node = make_node(is_char ? NODE_CHAR_DECLARATION : NODE_DECLARATION,
 				name->value);
+	node->ptr_depth = nstars;
 	if (current()->type == TOKEN_ASSIGN) {
 		position++;
 		add_child(node, parse_expression());
@@ -887,14 +930,12 @@ static struct ast_node *parse_local_struct_decl(void)
 	struct token *size_tok;
 	struct ast_node *node;
 	int is_ptr;
+	int nstars;
 
 	position++;
 	tname = expect(TOKEN_IDENTIFIER);
-	is_ptr = 0;
-	if (current()->type == TOKEN_STAR) {
-		is_ptr = 1;
-		position++;
-	}
+	nstars = count_stars();
+	is_ptr = nstars > 0;
 	vname = expect(TOKEN_IDENTIFIER);
 	if (!is_ptr && current()->type == TOKEN_LBRACKET) {
 		position++;
@@ -907,6 +948,7 @@ static struct ast_node *parse_local_struct_decl(void)
 		return node;
 	}
 	node = make_node(is_ptr ? NODE_STRUCT_PTR_DECL : NODE_STRUCT_DECL, tname->value);
+	node->ptr_depth = nstars;
 	add_child(node, make_node(NODE_VAR, vname->value));
 	if (!is_ptr && current()->type == TOKEN_ASSIGN) {
 		position++;
@@ -926,6 +968,7 @@ static struct ast_node *parse_struct_def(void)
 	int is_char;
 	int is_long;
 	int is_ptr;
+	int nstars;
 
 	position++;
 	name = expect(TOKEN_IDENTIFIER);
@@ -940,17 +983,15 @@ static struct ast_node *parse_struct_def(void)
 			position++;
 			ftype = expect(TOKEN_IDENTIFIER);
 		} else if (!skip_enum_type()) {
-			is_char = current()->type == TOKEN_CHAR;
+			is_char = current()->type == TOKEN_CHAR
+					|| current()->type == TOKEN_VOID;
 			is_long = current()->type == TOKEN_LONG;
 			position++;
 			if (is_long && current()->type == TOKEN_INT)
 				position++;
 		}
-		is_ptr = 0;
-		if (current()->type == TOKEN_STAR) {
-			is_ptr = 1;
-			position++;
-		}
+		nstars = count_stars();
+		is_ptr = nstars > 0;
 		fname = expect(TOKEN_IDENTIFIER);
 		expect(TOKEN_SEMICOLON);
 		if (ftype && !is_ptr) {
@@ -971,6 +1012,7 @@ static struct ast_node *parse_struct_def(void)
 			field = make_node(is_char ? NODE_CHAR_DECLARATION
 					: NODE_DECLARATION, fname->value);
 		}
+		field->ptr_depth = nstars;
 		add_child(node, field);
 	}
 	expect(TOKEN_RBRACE);
@@ -986,14 +1028,12 @@ static struct ast_node *parse_global_struct(void)
 	struct ast_node *node;
 	int is_ptr;
 	int init_count;
+	int nstars;
 
 	position++;
 	tname = expect(TOKEN_IDENTIFIER);
-	is_ptr = 0;
-	if (current()->type == TOKEN_STAR) {
-		is_ptr = 1;
-		position++;
-	}
+	nstars = count_stars();
+	is_ptr = nstars > 0;
 	vname = expect(TOKEN_IDENTIFIER);
 	/* value holds the type so the var name lives in the child like the local form */
 	if (!is_ptr && current()->type == TOKEN_LBRACKET) {
@@ -1013,6 +1053,7 @@ static struct ast_node *parse_global_struct(void)
 	}
 	node = make_node(is_ptr ? NODE_GLOBAL_STRUCT_PTR : NODE_GLOBAL_STRUCT,
 			tname->value);
+	node->ptr_depth = nstars;
 	add_child(node, make_node(NODE_VAR, vname->value));
 	if (current()->type == TOKEN_ASSIGN) {
 		position++;
@@ -1093,6 +1134,7 @@ static struct ast_node *parse_statement(void)
 	case TOKEN_CHAR:
 	case TOKEN_UNSIGNED:
 	case TOKEN_LONG:
+	case TOKEN_VOID:
 	case TOKEN_ENUM:	return parse_declaration();
 	case TOKEN_STRUCT:	return parse_local_struct_decl();
 	/* a local static loses its storage duration here which only shows up
@@ -1147,17 +1189,21 @@ static struct ast_node *parse_function(void)
 	struct token *sret_type;
 	const char *ret_base;
 	const char *ret_pointee;
+	struct ast_node *param;
+	struct ast_node *ret;
 	int is_ptr_param;
 	int is_char_param;
+	int nstars;
 
 	sret_type = NULL;
 	ret_pointee = NULL;
+	nstars = 0;
 	skip_qualifiers();
 	if (current()->type == TOKEN_STRUCT) {
 		position++;
 		sret_type = expect(TOKEN_IDENTIFIER);
-		if (current()->type == TOKEN_STAR) {
-			position++;
+		nstars = count_stars();
+		if (nstars) {
 			ret_pointee = sret_type->value;
 			sret_type = NULL;
 		}
@@ -1182,18 +1228,20 @@ static struct ast_node *parse_function(void)
 				expect(TOKEN_INT);
 			}
 		}
-		if (current()->type == TOKEN_STAR) {
-			position++;
+		nstars = count_stars();
+		if (nstars)
 			ret_pointee = ret_base;
-		}
 	}
 	name = expect(TOKEN_IDENTIFIER);
 	node = make_node(NODE_FUNCTION, name->value);
-	if (sret_type)
+	if (sret_type) {
 		add_child(node, make_node(NODE_STRUCT_RET, sret_type->value));
-	else if (ret_pointee)
+	} else if (ret_pointee) {
 		/* the pointee decides how call sites scale arithmetic so codegen needs it recorded */
-		add_child(node, make_node(NODE_PTR_RET, (char *)ret_pointee));
+		ret = make_node(NODE_PTR_RET, (char *)ret_pointee);
+		ret->ptr_depth = nstars;
+		add_child(node, ret);
+	}
 	expect(TOKEN_LPAREN);
 	while (current()->type != TOKEN_RPAREN) {
 		skip_qualifiers();
@@ -1242,17 +1290,15 @@ static struct ast_node *parse_function(void)
 		}
 		if (current()->type == TOKEN_STRUCT) {
 			struct token *stype;
-			struct ast_node *param;
 			position++;
 			stype = expect(TOKEN_IDENTIFIER);
-			if (current()->type == TOKEN_STAR) {
-				position++;
-				pname = expect(TOKEN_IDENTIFIER);
+			nstars = count_stars();
+			pname = expect(TOKEN_IDENTIFIER);
+			if (nstars)
 				param = make_node(NODE_STRUCT_PTR_DECL, stype->value);
-			} else {
-				pname = expect(TOKEN_IDENTIFIER);
+			else
 				param = make_node(NODE_STRUCT_VAL_PARAM, stype->value);
-			}
+			param->ptr_depth = nstars;
 			add_child(param, make_node(NODE_VAR, pname->value));
 			add_child(node, param);
 		} else {
@@ -1274,28 +1320,30 @@ static struct ast_node *parse_function(void)
 			} else if (current()->type == TOKEN_CHAR) {
 				is_char_param = 1;
 				position++;
-			}
-			is_ptr_param = 0;
-			if (current()->type == TOKEN_STAR) {
-				is_ptr_param = 1;
+			} else if (current()->type == TOKEN_VOID) {
+				/* a void pointer steps a byte at a time so it rides the char path */
+				is_char_param = 1;
 				position++;
-				skip_qualifiers();
 			}
+			nstars = count_stars();
+			is_ptr_param = nstars > 0;
 			pname = expect(TOKEN_IDENTIFIER);
 			if (is_ptr_param)
-				add_child(node, make_node(
+				param = make_node(
 						is_char_param ? NODE_CHAR_PTR_DECLARATION : NODE_PTR_DECLARATION,
-						pname->value));
+						pname->value);
 			else if (is_long_param)
-				add_child(node, make_node(NODE_LONG_DECLARATION, pname->value));
+				param = make_node(NODE_LONG_DECLARATION, pname->value);
 			else if (is_unsigned_param && is_char_param)
-				add_child(node, make_node(NODE_UNSIGNED_CHAR_DECLARATION, pname->value));
+				param = make_node(NODE_UNSIGNED_CHAR_DECLARATION, pname->value);
 			else if (is_unsigned_param)
-				add_child(node, make_node(NODE_UNSIGNED_DECLARATION, pname->value));
+				param = make_node(NODE_UNSIGNED_DECLARATION, pname->value);
 			else
-				add_child(node, make_node(
+				param = make_node(
 						is_char_param ? NODE_CHAR_DECLARATION : NODE_DECLARATION,
-						pname->value));
+						pname->value);
+			param->ptr_depth = nstars;
+			add_child(node, param);
 		}
 		if (current()->type == TOKEN_COMMA)
 			position++;
@@ -1320,20 +1368,18 @@ static struct ast_node *parse_global(void)
 	int is_ptr;
 	int infer_size;
 	int init_count;
+	int nstars;
 
 	is_char = 0;
 	skip_qualifiers();
 	if (!skip_enum_type()) {
-		is_char = (current()->type == TOKEN_CHAR);
+		/* a void pointer steps a byte at a time so it rides the char path */
+		is_char = (current()->type == TOKEN_CHAR
+				|| current()->type == TOKEN_VOID);
 		position++;
 	}
-	is_ptr = 0;
-	skip_qualifiers();
-	if (current()->type == TOKEN_STAR) {
-		is_ptr = 1;
-		position++;
-		skip_qualifiers();
-	}
+	nstars = count_stars();
+	is_ptr = nstars > 0;
 	name = expect(TOKEN_IDENTIFIER);
 	if (current()->type == TOKEN_LBRACKET) {
 		position++;
@@ -1365,6 +1411,7 @@ static struct ast_node *parse_global(void)
 					name->value);
 			exit(1);
 		}
+		node->ptr_depth = nstars;
 		expect(TOKEN_SEMICOLON);
 		return node;
 	}
@@ -1373,6 +1420,7 @@ static struct ast_node *parse_global(void)
 				name->value);
 	else
 		node = make_node(NODE_GLOBAL, name->value);
+	node->ptr_depth = nstars;
 	/* anything non constant gets rejected in codegen where the fold happens */
 	if (current()->type == TOKEN_ASSIGN) {
 		position++;

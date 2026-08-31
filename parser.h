@@ -80,6 +80,7 @@ struct ast_node {
 	char *value;
 	struct ast_node **children;
 	int child_count;
+	int ptr_depth;   /* stars after the base type so int is 0 and int ** is 2 */
 };
 
 struct ast_node *parse(struct token *tokens, int token_count);
