@@ -557,7 +557,7 @@ static void gen_obj_addr(struct ast_node *node)
 		return;
 	}
 	if (node->type != NODE_VAR) {
-		fprintf(stderr, "codegen: member access on a non struct\n");
+		fprintf(stderr, "codegen: not an lvalue\n");
 		exit(1);
 	}
 	if (is_global(node->value)) {
@@ -816,6 +816,9 @@ static struct type *expr_type(struct ast_node *node)
 	case NODE_PREFIX_DEC:
 	case NODE_POSTFIX_INC:
 	case NODE_POSTFIX_DEC:
+		/* anything that is not a plain name rides in a child instead */
+		if (node->child_count > 0)
+			return expr_type(node->children[0]);
 		g = lookup_global(node->value);
 		if (g)
 			return g->ty;
@@ -1013,15 +1016,20 @@ static void gen_assign(struct ast_node *node)
 	emit_store(v->offset, v->ty);
 }
 
+/* the storage an lvalue names lands in rax */
+static void gen_lvalue_addr(struct ast_node *node)
+{
+	if (node->type == NODE_MEMBER || node->type == NODE_PTR_MEMBER)
+		gen_member_addr(node);
+	else
+		gen_obj_addr(node);
+}
+
 static void gen_addr_of(struct ast_node *node)
 {
 	/* &a[i] and &s.f carry the operand as a child since there is no plain name to take */
 	if (node->child_count > 0) {
-		if (node->children[0]->type == NODE_MEMBER
-				|| node->children[0]->type == NODE_PTR_MEMBER)
-			gen_member_addr(node->children[0]);
-		else
-			gen_obj_addr(node->children[0]);
+		gen_lvalue_addr(node->children[0]);
 		return;
 	}
 	if (is_global(node->value)) {
@@ -1072,6 +1080,42 @@ static void gen_deref_assign(struct ast_node *node)
 		emit("\tmovl %%ecx, (%%rax)");
 }
 
+/* rcx holds the address */
+static void emit_load_at(struct type *ty)
+{
+	int esz = type_size(ty);
+
+	if (ty->kind == TY_PTR || esz == 8)   emit("\tmovq (%%rcx), %%rax");
+	else if (esz == 1 && ty->is_unsigned) emit("\tmovzbl (%%rcx), %%eax");
+	else if (esz == 1)                    emit("\tmovsbl (%%rcx), %%eax");
+	else                                  emit("\tmovl (%%rcx), %%eax");
+}
+
+/* rcx holds the address so the load and the mutation agree on where the target is */
+static void emit_addr_inc_dec(struct ast_node *target, const char *op, int post)
+{
+	struct type *ty = expr_type(target);
+	int esz;
+
+	if (!ty) {
+		fprintf(stderr, "codegen: not an lvalue\n");
+		exit(1);
+	}
+	esz = type_size(ty);
+	gen_lvalue_addr(target);
+	emit("\tmovq %%rax, %%rcx");
+	if (post)
+		emit_load_at(ty);
+	/* pointer steps by element size not 1 */
+	if (ty->kind == TY_PTR)
+		emit("\t%sq $%d, (%%rcx)", op, type_size(ty->base));
+	else if (esz == 8) emit("\t%sq $1, (%%rcx)", op);
+	else if (esz == 1) emit("\t%sb $1, (%%rcx)", op);
+	else               emit("\t%sl $1, (%%rcx)", op);
+	if (!post)
+		emit_load_at(ty);
+}
+
 /* delta is +1 or -1
  * post means the old value loads before the mutation */
 static void gen_inc_dec(struct ast_node *node, int delta, int post)
@@ -1083,6 +1127,10 @@ static void gen_inc_dec(struct ast_node *node, int delta, int post)
 	int esz;
 
 	op = (delta > 0) ? "add" : "sub";
+	if (node->child_count > 0) {
+		emit_addr_inc_dec(node->children[0], op, post);
+		return;
+	}
 	g = lookup_global(node->value);
 	if (g) {
 		if (g->ty->kind == TY_PTR) {

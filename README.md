@@ -9,12 +9,12 @@ code generation. Currently it supports:
 - arithmetic operators: `+`, `-`, `*`, `/`, `%`
 - bitwise operators: `&`, `|`, `^`, `<<`, `>>`
 - unary operators: `-`, `~`, `!`
-- increment/decrement: prefix `++x`, `--x` and postfix `x++`, `x--`
+- increment/decrement: prefix `++x`, `--x` and postfix `x++`, `x--`, on any lvalue rather than only a bare name, so `(*p)++`, `++(*p)`, `a[i]++`, `--a[i]`, `s.field++` and `p->field++` all work; when the target is a pointer it steps by its element size
 - comparison operators: `<`, `>`, `<=`, `>=`, `==`, `!=`
 - logical operators: `&&`, `||`
 - ternary conditional: `cond ? a : b`
 - local and global variable declarations, assignments, and references
-- compound assignment: `+=`, `-=`, `*=`, `/=`
+- compound assignment: `+=`, `-=`, `*=`, `/=`, on the same set of lvalues, so `*p += 1`, `a[i] += 2`, `s.field *= 3` and `p->field -= 5` work. The target is duplicated into the expanded form, so a side effect written inside it happens twice
 - `if`/`else` statements
 - `while` loops
 - `for` loops
@@ -37,6 +37,7 @@ code generation. Currently it supports:
 - structs: `struct name { fields; }` definitions, local struct variables, member access and assignment via `.`, struct pointer declarations `struct T *p`, member access and assignment via `->`, struct pointer function parameters, `int`, `char`, `long` and pointer fields with real sizes and offsets (`char` packs to 1 byte, `int` aligns to 4, `long` and pointers align to 8, total size rounds up to the widest field)
 - struct pointer fields: `struct node *next` inside a struct, including self-referential types, so linked lists and trees work
 - member chains: `p->next->val`, `a[i].x`, `s.p->f`; every postfix step builds on the address of the previous one
+- postfix on a parenthesized expression: `[`, `.`, `->`, `++` and `--` attach to whatever expression precedes them, so `(a)[0]`, `(p)[i]`, `(*t)[i]` on a `char **`, `(p)[0]++` and `(*q)++` on a pointer to a pointer all parse and index at the right width
 - struct arrays: `struct T a[N]` as locals and globals, element access `a[i].field`, decay to a pointer when passed to functions
 - global structs: `struct T g;`, `struct T *gp;` and `struct T a[N];` at file scope, with brace initializers laid out field by field with real padding, so the keyword-table shape `struct kw table[3] = { {"int", 11}, {"char", 22} };` works; pointer fields take a string literal, `&other` or `0`, and a struct array needs an explicit size since the parser does not know the field count
 - struct pointer arithmetic: `p + n`, `p++`, `p--` step by the full struct size

@@ -43,6 +43,19 @@ static void add_child(struct ast_node *parent, struct ast_node *child)
 	parent->children[parent->child_count - 1] = child;
 }
 
+/* x op= e desugars into x = x op e so the target has to exist twice */
+static struct ast_node *clone_ast(struct ast_node *node)
+{
+	struct ast_node *copy;
+	int i;
+
+	copy = make_node(node->type, node->value);
+	copy->ptr_depth = node->ptr_depth;
+	for (i = 0; i < node->child_count; i++)
+		add_child(copy, clone_ast(node->children[i]));
+	return copy;
+}
+
 /* enum constants get folded to plain numbers at parse time like sizeof
  * so codegen never sees them */
 struct enum_entry {
@@ -167,15 +180,63 @@ static const char *parse_type_name(int *depth)
 	return "int";
 }
 
+/* postfix binds to whatever came before it so a parenthesized expression
+ * or a call result is as good a base as a name */
+static struct ast_node *parse_postfix(struct ast_node *node)
+{
+	struct token *field;
+	struct ast_node *base;
+	struct ast_node *binary;
+	struct ast_node *inc;
+	enum node_type kind;
+	int arrow;
+
+	for (;;) {
+		if (current()->type == TOKEN_LBRACKET) {
+			/* p[i] is sugar for *(p + i) */
+			position++;
+			binary = make_node(NODE_BINARY, "+");
+			add_child(binary, node);
+			add_child(binary, parse_expression());
+			expect(TOKEN_RBRACKET);
+			node = make_node(NODE_DEREF, NULL);
+			add_child(node, binary);
+			continue;
+		}
+		if (current()->type == TOKEN_DOT || current()->type == TOKEN_ARROW) {
+			arrow = current()->type == TOKEN_ARROW;
+			position++;
+			field = expect(TOKEN_IDENTIFIER);
+			base = node;
+			node = make_node(arrow ? NODE_PTR_MEMBER : NODE_MEMBER,
+					field->value);
+			add_child(node, base);
+			continue;
+		}
+		if (current()->type == TOKEN_INC || current()->type == TOKEN_DEC) {
+			kind = current()->type == TOKEN_INC
+					? NODE_POSTFIX_INC : NODE_POSTFIX_DEC;
+			position++;
+			/* a plain name keeps the name in value so nothing downstream has to walk a child */
+			if (node->type == NODE_VAR) {
+				inc = make_node(kind, node->value);
+				free_ast(node);
+			} else {
+				inc = make_node(kind, NULL);
+				add_child(inc, node);
+			}
+			node = inc;
+			continue;
+		}
+		return node;
+	}
+}
+
 static struct ast_node *parse_primary(void)
 {
 	struct token *tok;
-	struct token *field;
 	struct ast_node *node;
-	struct ast_node *base;
-	struct ast_node *binary;
 	struct enum_entry *ent;
-	int arrow;
 	char buf[16];
 
 	if (current()->type == TOKEN_STRING_LITERAL) {
@@ -195,14 +256,6 @@ static struct ast_node *parse_primary(void)
 			sprintf(buf, "%d", ent->value);
 			return make_node(NODE_NUMBER, buf);
 		}
-		if (current()->type == TOKEN_INC) {
-			position++;
-			return make_node(NODE_POSTFIX_INC, tok->value);
-		}
-		if (current()->type == TOKEN_DEC) {
-			position++;
-			return make_node(NODE_POSTFIX_DEC, tok->value);
-		}
 		if (current()->type == TOKEN_LPAREN) {
 			position++;
 			node = make_node(NODE_CALL, tok->value);
@@ -215,37 +268,14 @@ static struct ast_node *parse_primary(void)
 		} else {
 			node = make_node(NODE_VAR, tok->value);
 		}
-		/* a postfix chain so mk()->v and p->next->val and a[i].x keep building on the last result */
-		while (current()->type == TOKEN_LBRACKET
-				|| current()->type == TOKEN_DOT
-				|| current()->type == TOKEN_ARROW) {
-			if (current()->type == TOKEN_LBRACKET) {
-				/* p[i] is sugar for *(p + i) */
-				position++;
-				binary = make_node(NODE_BINARY, "+");
-				add_child(binary, node);
-				add_child(binary, parse_expression());
-				expect(TOKEN_RBRACKET);
-				node = make_node(NODE_DEREF, NULL);
-				add_child(node, binary);
-				continue;
-			}
-			arrow = current()->type == TOKEN_ARROW;
-			position++;
-			field = expect(TOKEN_IDENTIFIER);
-			base = node;
-			node = make_node(arrow ? NODE_PTR_MEMBER : NODE_MEMBER,
-					field->value);
-			add_child(node, base);
-		}
-		return node;
+		return parse_postfix(node);
 	}
 
 	if (current()->type == TOKEN_LPAREN) {
 		position++;
 		node = parse_expression();
 		expect(TOKEN_RPAREN);
-		return node;
+		return parse_postfix(node);
 	}
 
 	fprintf(stderr, "parser: expected number or variable got '%s'\n",
@@ -269,11 +299,22 @@ static struct ast_node *parse_unary(void)
 		return node;
 	}
 	if (current()->type == TOKEN_INC || current()->type == TOKEN_DEC) {
-		enum token_type op = current()->type;
+		enum node_type kind;
+		struct ast_node *pre;
+
+		kind = current()->type == TOKEN_INC
+				? NODE_PREFIX_INC : NODE_PREFIX_DEC;
 		position++;
-		tok = expect(TOKEN_IDENTIFIER);
-		return make_node(op == TOKEN_INC ? NODE_PREFIX_INC : NODE_PREFIX_DEC,
-				tok->value);
+		node = parse_unary();
+		/* a plain name keeps the name in value so nothing downstream has to walk a child */
+		if (node->type == NODE_VAR) {
+			pre = make_node(kind, node->value);
+			free_ast(node);
+			return pre;
+		}
+		pre = make_node(kind, NULL);
+		add_child(pre, node);
+		return pre;
 	}
 	if (current()->type == TOKEN_AMPERSAND) {
 		position++;
@@ -528,59 +569,55 @@ static struct ast_node *parse_ternary(void)
 	return cond;
 }
 
+/* free_ast on the shell would take the target expression with it so the frees are manual */
+static struct ast_node *make_assign(struct ast_node *left, struct ast_node *value)
+{
+	struct ast_node *node;
+	struct ast_node *inner;
+	enum node_type kind;
+	char *fname;
+
+	if (left->type == NODE_DEREF) {
+		inner = left->children[0];
+		free(left->children);
+		free(left->value);
+		free(left);
+		node = make_node(NODE_DEREF_ASSIGN, NULL);
+		add_child(node, inner);
+		add_child(node, value);
+		return node;
+	}
+	if (left->type == NODE_MEMBER || left->type == NODE_PTR_MEMBER) {
+		kind = left->type == NODE_MEMBER
+				? NODE_MEMBER_ASSIGN : NODE_PTR_MEMBER_ASSIGN;
+		fname = strdup(left->value);
+		inner = left->children[0];
+		free(left->children);
+		free(left->value);
+		free(left);
+		node = make_node(kind, fname);
+		free(fname);
+		add_child(node, inner);
+		add_child(node, value);
+		return node;
+	}
+	node = make_node(NODE_ASSIGN, left->value);
+	free_ast(left);
+	add_child(node, value);
+	return node;
+}
+
 static struct ast_node *parse_expression(void)
 {
 	struct ast_node *left;
-	struct ast_node *node;
 	struct ast_node *binary;
-	struct ast_node *ptr_expr;
-	struct ast_node *var_node;
 	const char *op;
-	char *fname;
 
 	left = parse_ternary();
 
 	if (current()->type == TOKEN_ASSIGN) {
 		position++;
-		if (left->type == NODE_DEREF) {
-			/* free_ast on the shell would take the ptr child with it so the frees are manual */
-			ptr_expr = left->children[0];
-			free(left->children);
-			free(left->value);
-			free(left);
-			node = make_node(NODE_DEREF_ASSIGN, NULL);
-			add_child(node, ptr_expr);
-			add_child(node, parse_expression());
-			return node;
-		}
-		if (left->type == NODE_MEMBER) {
-			fname = strdup(left->value);
-			var_node = left->children[0];
-			free(left->children);
-			free(left->value);
-			free(left);
-			node = make_node(NODE_MEMBER_ASSIGN, fname);
-			free(fname);
-			add_child(node, var_node);
-			add_child(node, parse_expression());
-			return node;
-		}
-		if (left->type == NODE_PTR_MEMBER) {
-			fname = strdup(left->value);
-			var_node = left->children[0];
-			free(left->children);
-			free(left->value);
-			free(left);
-			node = make_node(NODE_PTR_MEMBER_ASSIGN, fname);
-			free(fname);
-			add_child(node, var_node);
-			add_child(node, parse_expression());
-			return node;
-		}
-		node = make_node(NODE_ASSIGN, left->value);
-		free_ast(left);
-		add_child(node, parse_expression()); /* right associative */
-		return node;
+		return make_assign(left, parse_expression()); /* right associative */
 	}
 
 	/* desugar x op= e into x = x op e */
@@ -592,13 +629,10 @@ static struct ast_node *parse_expression(void)
 
 	if (op) {
 		position++;
-		node = make_node(NODE_ASSIGN, left->value);
 		binary = make_node(NODE_BINARY, (char *)op);
-		add_child(binary, make_node(NODE_VAR, node->value));
-		free_ast(left);
+		add_child(binary, clone_ast(left));
 		add_child(binary, parse_expression());
-		add_child(node, binary);
-		return node;
+		return make_assign(left, binary);
 	}
 
 	return left;
