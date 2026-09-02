@@ -4,11 +4,15 @@
 #include <ctype.h>
 #include "lexer.h"
 
+/* stamped onto every token as it is made so errors can point at real source */
+static int current_line = 1;
+
 static struct token make_token(enum token_type type, const char *value)
 {
 	struct token t;
 	t.type = type;
 	t.value = strdup(value);
+	t.line = current_line;
 	return t;
 }
 
@@ -176,7 +180,8 @@ static void scan_define(const char *source, int *pos)
 		directive[len++] = source[(*pos)++];
 	directive[len] = '\0';
 	if (strcmp(directive, "define") != 0) {
-		fprintf(stderr, "redix: unknown directive '#%s'\n", directive);
+		fprintf(stderr, "redix: line %d: unknown directive '#%s'\n",
+				current_line, directive);
 		exit(1);
 	}
 
@@ -211,7 +216,7 @@ static void scan_define(const char *source, int *pos)
 		return;
 	}
 	if (macro_count >= MAX_MACROS) {
-		fprintf(stderr, "redix: too many macros\n");
+		fprintf(stderr, "redix: line %d: too many macros\n", current_line);
 		exit(1);
 	}
 	macro_map[macro_count].name = name;
@@ -234,7 +239,8 @@ static int expand_macro(struct token **tokens, int ntokens, int *capacity)
 		return ntokens;
 
 	if (expand_depth >= MAX_EXPAND_DEPTH) {
-		fprintf(stderr, "redix: macro expansion too deep\n");
+		fprintf(stderr, "redix: line %d: macro expansion too deep\n",
+				current_line);
 		exit(1);
 	}
 	expand_depth++;
@@ -268,7 +274,7 @@ static void scan_number(const char *source, int *pos,
 	number = malloc(length + 1);
 	memcpy(number, &source[start], length);
 	number[length] = '\0';
-	tokens[(*ntokens)++] = (struct token){ TOKEN_NUMBER, number };
+	tokens[(*ntokens)++] = (struct token){ TOKEN_NUMBER, number, current_line };
 }
 
 static void scan_identifier(const char *source, int *pos,
@@ -288,7 +294,7 @@ static void scan_identifier(const char *source, int *pos,
 	word[length] = '\0';
 
 	type = lookup_keyword(word);
-	tokens[(*ntokens)++] = (struct token){ type, word };
+	tokens[(*ntokens)++] = (struct token){ type, word, current_line };
 }
 
 /* only the named escapes so far no octal or hex forms */
@@ -307,7 +313,7 @@ static int decode_escape(char c)
 	case '\'':	return '\'';
 	case '"':	return '"';
 	}
-	fprintf(stderr, "redix: unknown escape '\\%c'\n", c);
+	fprintf(stderr, "redix: line %d: unknown escape '\\%c'\n", current_line, c);
 	exit(1);
 }
 
@@ -327,12 +333,13 @@ static void scan_char(const char *source, int *pos,
 		value = source[(*pos)++];
 	}
 	if (source[*pos] != '\'') {
-		fprintf(stderr, "redix: unterminated character literal\n");
+		fprintf(stderr, "redix: line %d: unterminated character literal\n",
+				current_line);
 		exit(1);
 	}
 	(*pos)++;
 	sprintf(buf, "%d", value);
-	tokens[(*ntokens)++] = (struct token){ TOKEN_NUMBER, strdup(buf) };
+	tokens[(*ntokens)++] = (struct token){ TOKEN_NUMBER, strdup(buf), current_line };
 }
 
 /* escapes stay raw text since the assembler decodes them in .string */
@@ -351,7 +358,7 @@ static void scan_string(const char *source, int *pos,
 	buf[len] = '\0';
 	if (source[*pos] == '"')
 		(*pos)++;
-	tokens[(*ntokens)++] = (struct token){ TOKEN_STRING_LITERAL, strdup(buf) };
+	tokens[(*ntokens)++] = (struct token){ TOKEN_STRING_LITERAL, strdup(buf), current_line };
 }
 
 struct token *lexer_tokenize(const char *source, int *count)
@@ -362,9 +369,15 @@ struct token *lexer_tokenize(const char *source, int *count)
 	struct token *tokens = malloc(sizeof(struct token) * capacity);
 	char c;
 
+	/* a nested call is a macro body being relexed so the outer line must survive */
+	if (expand_depth == 0)
+		current_line = 1;
+
 	while (source[position] != '\0') {
 
 		if (isspace(source[position])) {
+			if (source[position] == '\n')
+				current_line++;
 			position++;
 			continue;
 		}
@@ -382,6 +395,8 @@ struct token *lexer_tokenize(const char *source, int *count)
 					position += 2;
 					break;
 				}
+				if (source[position] == '\n')
+					current_line++;
 				position++;
 			}
 			continue;
@@ -577,7 +592,8 @@ struct token *lexer_tokenize(const char *source, int *count)
 				scan_identifier(source, &position, tokens, &ntokens);
 				ntokens = expand_macro(&tokens, ntokens, &capacity);
 			} else {
-				fprintf(stderr, "redix: unexpected character '%c'\n", c);
+				fprintf(stderr, "redix: line %d: unexpected character '%c'\n",
+						current_line, c);
 				exit(1);
 			}
 			break;

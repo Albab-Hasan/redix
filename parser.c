@@ -13,12 +13,20 @@ static struct token *current(void)
 	return &tokens[position];
 }
 
+/* position can sit one past the last token when the file ends early */
+static int line_here(void)
+{
+	if (position >= token_count)
+		return token_count > 0 ? tokens[token_count - 1].line : 0;
+	return tokens[position].line;
+}
+
 /* dies on a mismatch so parse functions never need an error path */
 static struct token *expect(enum token_type type)
 {
 	if (position >= token_count || current()->type != type) {
-		fprintf(stderr, "parser: unexpected token '%s'\n",
-				current()->value);
+		fprintf(stderr, "parser: line %d: unexpected token '%s'\n",
+				line_here(), current()->value);
 		exit(1);
 	}
 	return &tokens[position++];
@@ -32,6 +40,8 @@ static struct ast_node *make_node(enum node_type type, char *value)
 	node->child_count = 0;
 	node->children = NULL;
 	node->ptr_depth = 0;
+	/* the token under the parser when the node is built is close enough to blame */
+	node->line = line_here();
 	return node;
 }
 
@@ -278,8 +288,8 @@ static struct ast_node *parse_primary(void)
 		return parse_postfix(node);
 	}
 
-	fprintf(stderr, "parser: expected number or variable got '%s'\n",
-			current()->value);
+	fprintf(stderr, "parser: line %d: expected number or variable got '%s'\n",
+			line_here(), current()->value);
 	exit(1);
 	return NULL;
 }
@@ -391,7 +401,8 @@ static struct ast_node *parse_unary(void)
 				position++;
 			}
 		} else {
-			fprintf(stderr, "parser: sizeof expects a type\n");
+			fprintf(stderr, "parser: line %d: sizeof expects a type\n",
+					line_here());
 			exit(1);
 			sz = 0;
 		}
@@ -746,7 +757,8 @@ static struct ast_node *parse_declaration_inner(void)
 		is_char = 1;
 		position++;
 	} else if (!is_unsigned && !is_enum) {
-		fprintf(stderr, "parser: expected type specifier\n");
+		fprintf(stderr, "parser: line %d: expected type specifier\n",
+				line_here());
 		exit(1);
 	}
 
@@ -911,8 +923,8 @@ static struct ast_node *parse_switch(void)
 			if (current()->type == TOKEN_IDENTIFIER) {
 				ent = lookup_enum(current()->value);
 				if (!ent) {
-					fprintf(stderr, "parser: unknown enum constant '%s'\n",
-							current()->value);
+					fprintf(stderr, "parser: line %d: unknown enum constant '%s'\n",
+							line_here(), current()->value);
 					exit(1);
 				}
 				position++;
@@ -928,7 +940,8 @@ static struct ast_node *parse_switch(void)
 			expect(TOKEN_COLON);
 			arm = make_node(NODE_DEFAULT, NULL);
 		} else {
-			fprintf(stderr, "parser: expected case or default in switch\n");
+			fprintf(stderr, "parser: line %d: expected case or default in switch\n",
+					line_here());
 			exit(1);
 			arm = NULL;
 		}
@@ -1030,8 +1043,8 @@ static struct ast_node *parse_struct_def(void)
 		expect(TOKEN_SEMICOLON);
 		if (ftype && !is_ptr) {
 			/* a nested struct value would need its own layout copied in */
-			fprintf(stderr, "parser: struct field '%s' must be a pointer\n",
-					fname->value);
+			fprintf(stderr, "parser: line %d: struct field '%s' must be a pointer\n",
+					line_here(), fname->value);
 			exit(1);
 		}
 		if (ftype) {
@@ -1116,7 +1129,8 @@ static void parse_enum_def(void)
 			value = atoi(expect(TOKEN_NUMBER)->value);
 		}
 		if (enum_count >= MAX_ENUMS) {
-			fprintf(stderr, "parser: too many enum constants\n");
+			fprintf(stderr, "parser: line %d: too many enum constants\n",
+					line_here());
 			exit(1);
 		}
 		enum_map[enum_count].name = strdup(name->value);
@@ -1441,8 +1455,8 @@ static struct ast_node *parse_global(void)
 			if (infer_size)
 				patch_inferred_size(size, init_count);
 		} else if (infer_size) {
-			fprintf(stderr, "parser: global array '%s' needs a size or an initializer\n",
-					name->value);
+			fprintf(stderr, "parser: line %d: global array '%s' needs a size or an initializer\n",
+					line_here(), name->value);
 			exit(1);
 		}
 		node->ptr_depth = nstars;

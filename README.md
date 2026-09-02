@@ -58,6 +58,7 @@ code generation. Currently it supports:
 - `static` and `const`: accepted wherever a type can start — functions, file-scope variables, locals, parameters, struct fields and casts (`static int f(const char *s)`, `const int x = 3`, `int const y = 4`, `char *const p`, `(const char *)p`) — and dropped by the parser. redix compiles one translation unit at a time so internal linkage changes nothing, and there is no write checking, so assigning to a `const` variable is silently allowed. A `static` local becomes an ordinary stack local, which only shows up if the local is written and expected to keep its value across calls
 - empty parameter lists spelled `(void)`: `int main(void)` and `int f(void);` mean the same thing as `()`
 - `//` line comments and `/* */` block comments
+- line numbers in error messages: `parser: line 12: unexpected token '('`. Lexer and parser errors point at the exact token. A codegen error reports the line of the statement or expression being emitted, so it can name the enclosing statement instead of the exact spot. A token produced by a macro expansion reports the line where the macro was used
 
 ## Building
 

@@ -7,6 +7,8 @@
 
 static FILE *out;
 static int label_count;
+/* set from the node being emitted so the lookup helpers can blame a line too */
+static int current_line;
 static char loop_break_label[64];
 static char loop_cont_label[64];
 
@@ -106,7 +108,8 @@ static int lookup_struct(const char *name)
 	for (i = 0; i < struct_type_count; i++)
 		if (strcmp(struct_types[i].name, name) == 0)
 			return i;
-	fprintf(stderr, "codegen: unknown struct type '%s'\n", name);
+	fprintf(stderr, "codegen: line %d: unknown struct type '%s'\n",
+			current_line, name);
 	exit(1);
 	return -1;
 }
@@ -218,8 +221,8 @@ static struct field_entry *lookup_field(int idx, const char *name)
 	for (i = 0; i < struct_types[idx].field_count; i++)
 		if (strcmp(struct_flds[idx][i].name, name) == 0)
 			return &struct_flds[idx][i];
-	fprintf(stderr, "codegen: struct '%s' has no field '%s'\n",
-			struct_types[idx].name, name);
+	fprintf(stderr, "codegen: line %d: struct '%s' has no field '%s'\n",
+			current_line, struct_types[idx].name, name);
 	exit(1);
 	return NULL;
 }
@@ -372,7 +375,8 @@ static struct var_entry *lookup_var(const char *name)
 	for (i = var_count - 1; i >= 0; i--)
 		if (strcmp(var_map[i].name, name) == 0)
 			return &var_map[i];
-	fprintf(stderr, "codegen: undefined variable '%s'\n", name);
+	fprintf(stderr, "codegen: line %d: undefined variable '%s'\n",
+			current_line, name);
 	exit(1);
 	return NULL;
 }
@@ -463,7 +467,8 @@ static int const_eval(struct ast_node *node)
 		return !l;
 	}
 	if (node->type != NODE_BINARY) {
-		fprintf(stderr, "codegen: global initializer is not a constant\n");
+		fprintf(stderr, "codegen: line %d: global initializer is not a constant\n",
+				current_line);
 		exit(1);
 	}
 	op = node->value;
@@ -479,8 +484,8 @@ static int const_eval(struct ast_node *node)
 	if (strcmp(op, "&") == 0)	return l & r;
 	if (strcmp(op, "|") == 0)	return l | r;
 	if (strcmp(op, "^") == 0)	return l ^ r;
-	fprintf(stderr, "codegen: operator '%s' not allowed in a global initializer\n",
-			op);
+	fprintf(stderr, "codegen: line %d: operator '%s' not allowed in a global initializer\n",
+			current_line, op);
 	exit(1);
 	return 0;
 }
@@ -557,7 +562,7 @@ static void gen_obj_addr(struct ast_node *node)
 		return;
 	}
 	if (node->type != NODE_VAR) {
-		fprintf(stderr, "codegen: not an lvalue\n");
+		fprintf(stderr, "codegen: line %d: not an lvalue\n", current_line);
 		exit(1);
 	}
 	if (is_global(node->value)) {
@@ -574,8 +579,8 @@ static struct field_entry *gen_member_addr(struct ast_node *node)
 
 	f = expr_field(node);
 	if (!f) {
-		fprintf(stderr, "codegen: no struct type for member '%s'\n",
-				node->value);
+		fprintf(stderr, "codegen: line %d: no struct type for member '%s'\n",
+				current_line, node->value);
 		exit(1);
 	}
 	/* arrow starts from a pointer value dot starts from the object itself */
@@ -1098,7 +1103,7 @@ static void emit_addr_inc_dec(struct ast_node *target, const char *op, int post)
 	int esz;
 
 	if (!ty) {
-		fprintf(stderr, "codegen: not an lvalue\n");
+		fprintf(stderr, "codegen: line %d: not an lvalue\n", current_line);
 		exit(1);
 	}
 	esz = type_size(ty);
@@ -1302,8 +1307,9 @@ static void gen_call(struct ast_node *node)
 	nstack = total_regs > 6 ? total_regs - 6 : 0;
 	for (i = 0; i < nargs && nstack; i++)
 		if (nregs[i] > 1 && reg_base[i] < 6 && reg_base[i] + nregs[i] > 6) {
-			fprintf(stderr, "codegen: struct arg %d of '%s' straddles "
-					"the register and stack halves\n", i, node->value);
+			fprintf(stderr, "codegen: line %d: struct arg %d of '%s' straddles "
+					"the register and stack halves\n",
+					current_line, i, node->value);
 			exit(1);
 		}
 
@@ -1374,6 +1380,9 @@ static void gen_ternary(struct ast_node *node)
 
 static void gen_expression(struct ast_node *node)
 {
+	if (node->line)
+		current_line = node->line;
+
 	switch (node->type) {
 	case NODE_NUMBER:		gen_number(node);		break;
 	case NODE_UNARY:		gen_unary(node);		break;
@@ -1401,8 +1410,8 @@ static void gen_expression(struct ast_node *node)
 				struct_types[lookup_struct(node->value)].total_size);
 		break;
 	default:
-		fprintf(stderr, "codegen: bad expression node type %d\n",
-				node->type);
+		fprintf(stderr, "codegen: line %d: bad expression node type %d\n",
+				current_line, node->type);
 		exit(1);
 	}
 }
@@ -1654,6 +1663,9 @@ static void gen_for(struct ast_node *node)
 
 static void gen_statement(struct ast_node *node)
 {
+	if (node->line)
+		current_line = node->line;
+
 	switch (node->type) {
 	case NODE_RETURN:		gen_return(node);		break;
 	case NODE_DECLARATION:
@@ -1706,8 +1718,8 @@ static void gen_statement(struct ast_node *node)
 		gen_expression(node);
 		break;
 	default:
-		fprintf(stderr, "codegen: bad statement node type %d\n",
-				node->type);
+		fprintf(stderr, "codegen: line %d: bad statement node type %d\n",
+				current_line, node->type);
 		exit(1);
 	}
 }

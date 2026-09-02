@@ -76,6 +76,7 @@ enum token_type {
 struct token {
 	enum token_type type;
 	char *value;
+	int line;
 };
 
 /* count gets set to how many tokens were made */
