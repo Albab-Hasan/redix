@@ -73,7 +73,7 @@ struct enum_entry {
 	int value;
 };
 
-#define MAX_ENUMS 64
+#define MAX_ENUMS 256
 
 static struct enum_entry enum_map[MAX_ENUMS];
 static int enum_count;
@@ -188,6 +188,27 @@ static const char *parse_type_name(int *depth)
 	else if (is_char)                  return "char";
 	else if (is_void)                  return "void";
 	return "int";
+}
+
+/* every base type starts with a keyword so one token after the paren
+ * is enough to tell a type from an expression */
+static int is_type_start(int idx)
+{
+	if (idx >= token_count)
+		return 0;
+	switch (tokens[idx].type) {
+	case TOKEN_INT:
+	case TOKEN_CHAR:
+	case TOKEN_LONG:
+	case TOKEN_UNSIGNED:
+	case TOKEN_VOID:
+	case TOKEN_STRUCT:
+	case TOKEN_ENUM:
+	case TOKEN_CONST:
+		return 1;
+	default:
+		return 0;
+	}
 }
 
 /* postfix binds to whatever came before it so a parenthesized expression
@@ -366,7 +387,16 @@ static struct ast_node *parse_unary(void)
 		char buf[8];
 
 		position++;
+		/* anything that is not a parenthesized type is an operand
+		 * and only codegen knows what type an expression has */
+		if (!(current()->type == TOKEN_LPAREN
+				&& is_type_start(position + 1))) {
+			node = make_node(NODE_SIZEOF_EXPR, NULL);
+			add_child(node, parse_unary());
+			return node;
+		}
 		expect(TOKEN_LPAREN);
+		skip_qualifiers();
 		if (current()->type == TOKEN_STRUCT) {
 			position++;
 			tok = expect(TOKEN_IDENTIFIER);
@@ -413,16 +443,7 @@ static struct ast_node *parse_unary(void)
 		return make_node(NODE_NUMBER, buf);
 	}
 	/* peek at position+1 to tell (type) cast from (expr) grouping */
-	if (current()->type == TOKEN_LPAREN
-			&& position + 1 < token_count
-			&& (tokens[position + 1].type == TOKEN_INT
-				|| tokens[position + 1].type == TOKEN_CHAR
-				|| tokens[position + 1].type == TOKEN_LONG
-				|| tokens[position + 1].type == TOKEN_UNSIGNED
-				|| tokens[position + 1].type == TOKEN_VOID
-				|| tokens[position + 1].type == TOKEN_STRUCT
-				|| tokens[position + 1].type == TOKEN_ENUM
-				|| tokens[position + 1].type == TOKEN_CONST)) {
+	if (current()->type == TOKEN_LPAREN && is_type_start(position + 1)) {
 		struct ast_node *node;
 		const char *cast_type;
 		int depth;

@@ -33,7 +33,7 @@ struct type {
 	char tag[64];
 };
 
-#define MAX_VARS 128
+#define MAX_VARS 256
 static struct var_entry {
 	char *name;
 	int offset;      /* negative offset from rbp */
@@ -42,25 +42,25 @@ static struct var_entry {
 static int var_count;
 static int stack_offset;
 
-#define MAX_FUNCS 64
+#define MAX_FUNCS 256
 static char *func_names[MAX_FUNCS];
 static int func_count;
 
 /* globals get the same treatment as var_map so pointer and array
  * globals remember what they point at */
-#define MAX_GLOBALS 64
+#define MAX_GLOBALS 128
 static struct glob_entry {
 	char *name;
 	struct type *ty;
 } global_map[MAX_GLOBALS];
 static int global_count;
 
-#define MAX_STRINGS 64
+#define MAX_STRINGS 512
 static char *string_lits[MAX_STRINGS];
 static int string_count;
 
-#define MAX_FIELDS 16
-#define MAX_STRUCTS 16
+#define MAX_FIELDS 32
+#define MAX_STRUCTS 32
 static struct field_entry {
 	char name[64];
 	int offset;
@@ -74,7 +74,7 @@ static struct {
 static int struct_type_count;
 
 /* maps function names to their struct return size so call sites know rax:rdx is live */
-#define MAX_SRET 32
+#define MAX_SRET 64
 static struct {
 	char name[64];
 	int  total_size;
@@ -83,7 +83,7 @@ static int sret_count;
 static char current_func_sret_type[64];
 
 /* a pointer returning function tells call sites nothing by itself so the type is kept here */
-#define MAX_RETPTR 32
+#define MAX_RETPTR 256
 static struct {
 	char name[64];
 	struct type *ty;
@@ -91,7 +91,7 @@ static struct {
 static int retptr_count;
 
 /* call sites must zero al before a variadic callee so the registry has to reach them */
-#define MAX_VARARG 32
+#define MAX_VARARG 64
 static char *vararg_names[MAX_VARARG];
 static int vararg_count;
 
@@ -811,6 +811,7 @@ static struct type *expr_type(struct ast_node *node)
 	switch (node->type) {
 	case NODE_NUMBER:
 	case NODE_SIZEOF_STRUCT:
+	case NODE_SIZEOF_EXPR:
 		return ty_int;
 	case NODE_STRING:
 		return ptr_to(ty_char);
@@ -886,6 +887,19 @@ static int expr_is_unsigned(struct ast_node *node)
 	struct type *ty = expr_type(node);
 
 	return ty && ty->is_unsigned;
+}
+
+/* the operand never runs so only the type it would have had matters */
+static int sizeof_operand(struct ast_node *node)
+{
+	struct type *ty = expr_type(node->children[0]);
+
+	if (!ty) {
+		fprintf(stderr, "codegen: line %d: sizeof operand has no type\n",
+				current_line);
+		exit(1);
+	}
+	return type_size(ty);
 }
 
 /* rcx holds left rax holds right
@@ -1409,6 +1423,9 @@ static void gen_expression(struct ast_node *node)
 		emit("\tmov $%d, %%eax",
 				struct_types[lookup_struct(node->value)].total_size);
 		break;
+	case NODE_SIZEOF_EXPR:
+		emit("\tmov $%d, %%eax", sizeof_operand(node));
+		break;
 	default:
 		fprintf(stderr, "codegen: line %d: bad expression node type %d\n",
 				current_line, node->type);
@@ -1715,6 +1732,7 @@ static void gen_statement(struct ast_node *node)
 	case NODE_CAST:
 	case NODE_VA_ARG:
 	case NODE_SIZEOF_STRUCT:
+	case NODE_SIZEOF_EXPR:
 		gen_expression(node);
 		break;
 	default:

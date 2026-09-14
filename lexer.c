@@ -143,7 +143,7 @@ struct macro_entry {
 	char *value;
 };
 
-#define MAX_MACROS 64
+#define MAX_MACROS 128
 #define MAX_EXPAND_DEPTH 32
 
 static struct macro_entry macro_map[MAX_MACROS];
