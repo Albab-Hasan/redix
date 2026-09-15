@@ -82,6 +82,12 @@ struct token {
 /* count gets set to how many tokens were made */
 struct token *lexer_tokenize(const char *source, int *count);
 
+/* search dirs for the angle form of include */
+void lexer_add_include_dir(const char *dir);
+
+/* a quoted include resolves next to this file */
+void lexer_set_dir(const char *path);
+
 /* debugging only */
 const char *token_type_name(enum token_type type);
 

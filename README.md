@@ -48,6 +48,8 @@ code generation. Currently it supports:
 - `do`/`while` loops: body runs at least once, `break` and `continue` work as expected
 - enums: `enum name { A, B = 5, C };` at file scope, constants fold to numbers at parse time, usable in expressions and as `case` labels; the tag also works as a type — `enum name x;` as a local, global, parameter, return type, struct field or `for` init, plus `sizeof(enum name)` → 4 and the cast `(enum name)x`. An enum variable is an `int` in every respect, so the parser consumes the type and forgets it and no range or assignment checking happens. Enums must still be defined at file scope
 - `#define NAME value`: object-like macros, expanded in the lexer, value can be any token sequence, macros can reference other macros, works as array sizes
+- `#include "file.h"` and `#include <file.h>`: the quoted form looks beside the including file first, the angle form skips that step, and both then search any `-I` directories followed by the `include/` directory shipped with redix. An included file is lexed on its own and its tokens are spliced into the stream, so a macro defined in a header stays defined in the file that included it, and a header can include another header. redix cannot parse the real system headers, so `include/` holds hand written stubs for stdio, stdlib, string, ctype and stdarg declaring only what redix can express. `FILE` is spelled `void *` in those stubs since redix has no `typedef`, and `stderr` is absent because a redix global emits a definition that would collide with the one in libc at link time
+- `#ifdef`, `#ifndef`, `#else`, `#endif` and `#undef`: enough to write include guards. A branch that is not taken gets skipped as raw text and never reaches the lexer, so it can contain anything. That skipping reads only directive lines, which means an `#endif` sitting inside a comment or a string in an untaken branch would close the branch early. There is no `#if` with expressions and no `defined()`
 - nested block scoping: `{ int x = 5; }` declares `x` only for the duration of the block; inner variables shadow outer ones with the same name and the outer name comes back when the block exits
 - `unsigned int` and `unsigned char`: zero-extension on char load (`movzbl`), unsigned division (`divl`/`divq` with `xor edx`), unsigned right shift (`shrl`/`shrq`), unsigned comparison flags (`setb`/`seta`/`setbe`/`setae`)
 - `long`: 64-bit integer, 64-bit arithmetic (`addq`/`subq`/`imulq`/`idivq`), `movq` loads and stores, works as local variables, function parameters, and return types
@@ -74,6 +76,8 @@ make
 gcc -o out out.s
 ./out
 ```
+
+Extra header directories are passed with `-I`, either as `-I dir` or `-Idir`.
 
 ## Tests
 

@@ -145,10 +145,25 @@ struct macro_entry {
 
 #define MAX_MACROS 128
 #define MAX_EXPAND_DEPTH 32
+#define MAX_INCLUDE_DIRS 16
+#define MAX_INCLUDE_DEPTH 16
+#define MAX_COND 32
+
+#ifndef REDIX_INCLUDE
+#define REDIX_INCLUDE "include"
+#endif
 
 static struct macro_entry macro_map[MAX_MACROS];
 static int macro_count;
 static int expand_depth;
+
+static char *include_dirs[MAX_INCLUDE_DIRS];
+static int include_dir_count;
+static int include_depth;
+static int cond_depth;
+
+/* the dir of the file being lexed right now so a quoted include resolves beside it */
+static char *current_dir;
 
 static struct macro_entry *lookup_macro(const char *name)
 {
@@ -161,29 +176,37 @@ static struct macro_entry *lookup_macro(const char *name)
 	return NULL;
 }
 
+static void read_word(const char *source, int *pos, char *out)
+{
+	int len = 0;
+
+	while (source[*pos] == ' ' || source[*pos] == '\t')
+		(*pos)++;
+	while (isalpha(source[*pos]))
+		out[len++] = source[(*pos)++];
+	out[len] = '\0';
+}
+
+static void read_name(const char *source, int *pos, char *out)
+{
+	int len = 0;
+
+	while (source[*pos] == ' ' || source[*pos] == '\t')
+		(*pos)++;
+	while (isalpha(source[*pos]) || isdigit(source[*pos])
+			|| source[*pos] == '_')
+		out[len++] = source[(*pos)++];
+	out[len] = '\0';
+}
+
 /* only object like macros -- the value stays raw text and gets relexed at expansion */
 static void scan_define(const char *source, int *pos)
 {
-	char directive[64];
-	int len;
 	int start;
 	int length;
 	char *name;
 	char *value;
 	struct macro_entry *ent;
-
-	(*pos)++;
-	while (source[*pos] == ' ' || source[*pos] == '\t')
-		(*pos)++;
-	len = 0;
-	while (isalpha(source[*pos]))
-		directive[len++] = source[(*pos)++];
-	directive[len] = '\0';
-	if (strcmp(directive, "define") != 0) {
-		fprintf(stderr, "redix: line %d: unknown directive '#%s'\n",
-				current_line, directive);
-		exit(1);
-	}
 
 	while (source[*pos] == ' ' || source[*pos] == '\t')
 		(*pos)++;
@@ -258,6 +281,275 @@ static int expand_macro(struct token **tokens, int ntokens, int *capacity)
 	for (i = 0; i < sub_count - 1; i++)
 		(*tokens)[ntokens++] = sub[i];
 	free(sub);
+	return ntokens;
+}
+
+void lexer_add_include_dir(const char *dir)
+{
+	if (include_dir_count >= MAX_INCLUDE_DIRS) {
+		fprintf(stderr, "redix: too many include dirs\n");
+		exit(1);
+	}
+	include_dirs[include_dir_count++] = strdup(dir);
+}
+
+static char *dir_of(const char *path)
+{
+	const char *slash = strrchr(path, '/');
+	char *dir;
+	int len;
+
+	if (!slash)
+		return strdup(".");
+	len = slash - path;
+	dir = malloc(len + 1);
+	memcpy(dir, path, len);
+	dir[len] = '\0';
+	return dir;
+}
+
+void lexer_set_dir(const char *path)
+{
+	free(current_dir);
+	current_dir = dir_of(path);
+}
+
+static char *read_file(const char *path)
+{
+	FILE *f = fopen(path, "r");
+	long length;
+	char *text;
+
+	if (!f)
+		return NULL;
+	fseek(f, 0, SEEK_END);
+	length = ftell(f);
+	fseek(f, 0, SEEK_SET);
+	text = malloc(length + 1);
+	fread(text, 1, length, f);
+	text[length] = '\0';
+	fclose(f);
+	return text;
+}
+
+static char *join_path(const char *dir, const char *name)
+{
+	char *path = malloc(strlen(dir) + strlen(name) + 2);
+
+	sprintf(path, "%s/%s", dir, name);
+	return path;
+}
+
+/* the quoted form looks beside the including file first the angle form never does */
+static char *open_include(const char *name, int angled, char **found)
+{
+	char *path;
+	char *text;
+	int i;
+
+	if (!angled) {
+		path = join_path(current_dir ? current_dir : ".", name);
+		text = read_file(path);
+		if (text) {
+			*found = path;
+			return text;
+		}
+		free(path);
+	}
+	for (i = 0; i < include_dir_count; i++) {
+		path = join_path(include_dirs[i], name);
+		text = read_file(path);
+		if (text) {
+			*found = path;
+			return text;
+		}
+		free(path);
+	}
+	path = join_path(REDIX_INCLUDE, name);
+	text = read_file(path);
+	if (text) {
+		*found = path;
+		return text;
+	}
+	free(path);
+	return NULL;
+}
+
+/* the file gets lexed on its own then its tokens splice in like a macro body */
+static int scan_include(const char *source, int *pos, struct token **tokens,
+		int ntokens, int *capacity)
+{
+	char name[256];
+	char *text;
+	char *path;
+	char *saved_dir;
+	struct token *sub;
+	int sub_count;
+	int saved_line;
+	int len = 0;
+	int angled;
+	char close;
+	int i;
+
+	while (source[*pos] == ' ' || source[*pos] == '\t')
+		(*pos)++;
+	angled = source[*pos] == '<';
+	if (!angled && source[*pos] != '"') {
+		fprintf(stderr, "redix: line %d: bad include\n", current_line);
+		exit(1);
+	}
+	close = angled ? '>' : '"';
+	(*pos)++;
+	while (source[*pos] != close && source[*pos] != '\n'
+			&& source[*pos] != '\0')
+		name[len++] = source[(*pos)++];
+	name[len] = '\0';
+	if (source[*pos] != close) {
+		fprintf(stderr, "redix: line %d: unterminated include\n", current_line);
+		exit(1);
+	}
+	(*pos)++;
+
+	if (include_depth >= MAX_INCLUDE_DEPTH) {
+		fprintf(stderr, "redix: line %d: includes nested too deep\n",
+				current_line);
+		exit(1);
+	}
+	text = open_include(name, angled, &path);
+	if (!text) {
+		fprintf(stderr, "redix: line %d: cannot find '%s'\n", current_line, name);
+		exit(1);
+	}
+
+	/* the nested call restarts line numbering so the outer count has to survive it */
+	saved_line = current_line;
+	saved_dir = current_dir;
+	current_dir = dir_of(path);
+	include_depth++;
+	sub = lexer_tokenize(text, &sub_count);
+	include_depth--;
+	free(current_dir);
+	current_dir = saved_dir;
+	current_line = saved_line;
+	free(text);
+	free(path);
+
+	while (ntokens + sub_count >= *capacity) {
+		*capacity *= 2;
+		*tokens = realloc(*tokens, sizeof(struct token) * *capacity);
+	}
+	/* the subs EOF stays out since an EOF in the middle would end the stream early */
+	for (i = 0; i < sub_count - 1; i++)
+		(*tokens)[ntokens++] = sub[i];
+	free(sub);
+	return ntokens;
+}
+
+static void push_cond(void)
+{
+	if (cond_depth >= MAX_COND) {
+		fprintf(stderr, "redix: line %d: conditionals nested too deep\n",
+				current_line);
+		exit(1);
+	}
+	cond_depth++;
+}
+
+static void pop_cond(void)
+{
+	if (cond_depth == 0) {
+		fprintf(stderr, "redix: line %d: stray endif\n", current_line);
+		exit(1);
+	}
+	cond_depth--;
+}
+
+static void undef_macro(const char *name)
+{
+	struct macro_entry *ent = lookup_macro(name);
+
+	if (!ent)
+		return;
+	free(ent->name);
+	free(ent->value);
+	/* lookup is a linear scan so moving the last entry into the hole is fine */
+	*ent = macro_map[--macro_count];
+}
+
+/* an untaken branch never reaches the lexer so only the directive lines get read */
+static int skip_branch(const char *source, int *pos, int want_else)
+{
+	char word[64];
+	int depth = 0;
+	int bol = 1;
+	char c;
+
+	while (source[*pos] != '\0') {
+		c = source[*pos];
+		if (c == '#' && bol) {
+			(*pos)++;
+			read_word(source, pos, word);
+			if (strcmp(word, "ifdef") == 0 || strcmp(word, "ifndef") == 0) {
+				depth++;
+			} else if (strcmp(word, "endif") == 0) {
+				if (depth == 0)
+					return 0;
+				depth--;
+			} else if (want_else && depth == 0
+					&& strcmp(word, "else") == 0) {
+				return 1;
+			}
+			continue;
+		}
+		if (c == '\n') {
+			current_line++;
+			bol = 1;
+		} else if (c != ' ' && c != '\t') {
+			bol = 0;
+		}
+		(*pos)++;
+	}
+	fprintf(stderr, "redix: line %d: missing endif\n", current_line);
+	exit(1);
+}
+
+static int scan_directive(const char *source, int *pos, struct token **tokens,
+		int ntokens, int *capacity)
+{
+	char word[64];
+	char name[256];
+	int defined;
+	int want;
+
+	(*pos)++;
+	read_word(source, pos, word);
+
+	if (strcmp(word, "define") == 0) {
+		scan_define(source, pos);
+	} else if (strcmp(word, "undef") == 0) {
+		read_name(source, pos, name);
+		undef_macro(name);
+	} else if (strcmp(word, "include") == 0) {
+		ntokens = scan_include(source, pos, tokens, ntokens, capacity);
+	} else if (strcmp(word, "ifdef") == 0 || strcmp(word, "ifndef") == 0) {
+		read_name(source, pos, name);
+		defined = lookup_macro(name) != NULL;
+		want = strcmp(word, "ifdef") == 0;
+		if (defined == want)
+			push_cond();
+		else if (skip_branch(source, pos, 1))
+			push_cond();
+	} else if (strcmp(word, "else") == 0) {
+		/* reaching an else while lexing means the if half was the taken one */
+		skip_branch(source, pos, 0);
+		pop_cond();
+	} else if (strcmp(word, "endif") == 0) {
+		pop_cond();
+	} else {
+		fprintf(stderr, "redix: line %d: unknown directive '#%s'\n",
+				current_line, word);
+		exit(1);
+	}
 	return ntokens;
 }
 
@@ -366,6 +658,7 @@ struct token *lexer_tokenize(const char *source, int *count)
 	int capacity = 64;
 	int ntokens = 0;
 	int position = 0;
+	int cond_start = cond_depth;
 	struct token *tokens = malloc(sizeof(struct token) * capacity);
 	char c;
 
@@ -583,7 +876,8 @@ struct token *lexer_tokenize(const char *source, int *count)
 			scan_char(source, &position, tokens, &ntokens);
 			break;
 		case '#':
-			scan_define(source, &position);
+			ntokens = scan_directive(source, &position, &tokens,
+					ntokens, &capacity);
 			break;
 		default:
 			if (isdigit(c)) {
@@ -598,6 +892,12 @@ struct token *lexer_tokenize(const char *source, int *count)
 			}
 			break;
 		}
+	}
+
+	if (cond_depth != cond_start) {
+		fprintf(stderr, "redix: line %d: unterminated conditional\n",
+				current_line);
+		exit(1);
 	}
 
 	tokens[ntokens++] = make_token(TOKEN_EOF, "EOF");

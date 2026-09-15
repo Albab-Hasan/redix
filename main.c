@@ -46,19 +46,31 @@ int main(int argc, char **argv)
 	FILE *outfile;
 	long length;
 	char *source;
+	char *path = NULL;
 	int count;
 	int i;
 	struct token *tokens;
 	struct ast_node *ast;
 
-	if (argc < 2) {
-		fprintf(stderr, "Usage: redix <file.c>\n");
+	for (i = 1; i < argc; i++) {
+		if (argv[i][0] == '-' && argv[i][1] == 'I') {
+			if (argv[i][2] != '\0')
+				lexer_add_include_dir(&argv[i][2]);
+			else if (i + 1 < argc)
+				lexer_add_include_dir(argv[++i]);
+		} else if (!path) {
+			path = argv[i];
+		}
+	}
+
+	if (!path) {
+		fprintf(stderr, "Usage: redix <file.c> [-I dir]\n");
 		return 1;
 	}
 
-	file = fopen(argv[1], "r");
+	file = fopen(path, "r");
 	if (!file) {
-		fprintf(stderr, "redix: cannot open '%s'\n", argv[1]);
+		fprintf(stderr, "redix: cannot open '%s'\n", path);
 		return 1;
 	}
 
@@ -70,6 +82,7 @@ int main(int argc, char **argv)
 	source[length] = '\0';
 	fclose(file);
 
+	lexer_set_dir(path);
 	tokens = lexer_tokenize(source, &count);
 	free(source);
 

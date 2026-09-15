@@ -1,5 +1,5 @@
 CC = gcc
-CFLAGS = -Wall -Wextra
+CFLAGS = -Wall -Wextra -DREDIX_INCLUDE='"$(CURDIR)/include"'
 
 SRCS = main.c lexer.c parser.c codegen.c
 OBJS = $(SRCS:.c=.o)
